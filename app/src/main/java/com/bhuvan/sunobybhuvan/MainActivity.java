@@ -728,6 +728,103 @@ public class MainActivity extends Activity {
                     DocumentsContract.buildDocumentUriUsingTree(
                             treeUri, id);
 
-            cursor = getContentResolver().query(
                     documentUri,
-          
+                    new String[]{
+                            DocumentsContract.Document.COLUMN_DISPLAY_NAME
+                    },
+                    null,
+                    null,
+                    null
+            );
+
+            if (cursor != null && cursor.moveToFirst()) {
+                int column = cursor.getColumnIndex(
+                        DocumentsContract.Document.COLUMN_DISPLAY_NAME
+                );
+
+                if (column >= 0) {
+                    String name = cursor.getString(column);
+
+                    if (name != null && !name.isEmpty()) {
+                        return name;
+                    }
+                }
+            }
+
+        } catch (Exception ignored) {
+            // Folder name could not be read.
+        } finally {
+            if (cursor != null) {
+                cursor.close();
+            }
+        }
+
+        return "Music Folder";
+    }
+
+    private void refreshFolderList() {
+
+        if (folderList == null) {
+            return;
+        }
+
+        folderList.removeAllViews();
+
+        if (folderUris.isEmpty()) {
+            TextView empty = text(
+                    "No folders added yet.",
+                    13,
+                    fg(),
+                    false
+            );
+
+            folderList.addView(empty, matchWrap());
+            return;
+        }
+
+        for (String key : folderUris) {
+
+            String name = folderNames.get(key);
+
+            if (name == null) {
+                name = "Music Folder";
+            }
+
+            TextView folder = text(
+                    "📁  " + name,
+                    13,
+                    fg(),
+                    false
+            );
+
+            folder.setPadding(
+                    dp(12), dp(12), dp(12), dp(12)
+            );
+
+            folder.setBackground(
+                    rounded(card(), dp(12))
+            );
+
+            LinearLayout.LayoutParams params = matchWrap();
+            params.setMargins(0, 0, 0, dp(7));
+
+            folderList.addView(folder, params);
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+
+        if (receiverRegistered) {
+            try {
+                unregisterReceiver(progressReceiver);
+            } catch (Exception ignored) {
+                // Receiver may already be unregistered.
+            }
+
+            receiverRegistered = false;
+        }
+
+        super.onDestroy();
+    }
+        }
