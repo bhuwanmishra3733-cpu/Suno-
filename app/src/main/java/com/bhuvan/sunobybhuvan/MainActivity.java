@@ -1,384 +1,369 @@
 package com.bhuvan.sunobybhuvan;
 
 import android.app.Activity;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.ClipData;
 import android.database.Cursor;
-import android.graphics.Color;
-import android.graphics.Typeface;
-import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
+import android.graphics.Color;
+import android.graphics.Typeface;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.Locale;
+import java.util.Set;
 
 public class MainActivity extends Activity {
 
     private static final int PICK_AUDIO = 101;
-    private static final int PICK_FOLDERS = 102;
+    private static final int PICK_FOLDER = 102;
 
-    private static final String PREFS = "SunoSettings";
-    private static final String THEME_KEY = "theme";
+    private final ArrayList<Uri> songs = new ArrayList<>();
+    private final ArrayList<String> songNames = new ArrayList<>();
+    private final Set<String> knownSongs = new HashSet<>();
 
-    private static final int PURPLE = 0;
-    private static final int RED = 1;
-    private static final int BLUE = 2;
-    private static final int LIGHT = 3;
-
-    private int currentTheme = PURPLE;
-
-    private int backgroundColor;
-    private int panelColor;
-    private int accentColor;
-    private int textColor;
-    private int secondaryTextColor;
-
-    private LinearLayout root;
-    private TextView songName;
-    private TextView status;
-    private TextView currentTime;
-    private TextView totalTime;
-    private TextView themeLabel;
+    private LinearLayout songList;
+    private TextView currentSongText;
+    private TextView statusText;
+    private TextView elapsedText;
+    private TextView durationText;
     private SeekBar seekBar;
 
-    private Button playButton;
-    private Button pauseButton;
+    private int currentIndex = -1;
+    private int currentPosition = 0;
+    private int currentDuration = 0;
+    private boolean userSeeking = false;
+    private boolean receiverRegistered = false;
+    private int themeIndex = 0;
 
-    private final ArrayList<Uri> selectedSongs = new ArrayList<>();
-    private final ArrayList<String> selectedSongNames = new ArrayList<>();
-    private final ArrayList<Uri> selectedFolders = new ArrayList<>();
-
-    private int currentSongIndex = -1;
-
-    private boolean isSeeking = false;
-
-    private final android.os.Handler handler =
-            new android.os.Handler(android.os.Looper.getMainLooper());
-
-    private final Runnable updateSeekBar = new Runnable() {
-        @Override
-        public void run() {
-            // Seek bar integration will be completed with
-            // a playback service that exposes player position.
-            handler.postDelayed(this, 500);
-        }
+    private final int[] backgroundColors = {
+            Color.rgb(18, 14, 35),
+            Color.rgb(35, 15, 20),
+            Color.rgb(12, 24, 42),
+            Color.rgb(245, 245, 245),
+            Color.rgb(40, 12, 35),
+            Color.rgb(10, 35, 25)
     };
 
-    private int dp(int value) {
-        return (int) (
-                value * getResources().getDisplayMetrics().density
-                        + 0.5f
-        );
-    }
+    private final int[] textColors = {
+            Color.WHITE,
+            Color.WHITE,
+            Color.WHITE,
+            Color.BLACK,
+            Color.WHITE,
+            Color.WHITE
+    };
+
+    private final BroadcastReceiver progressReceiver =
+            new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (!PlaybackService.ACTION_PROGRESS.equals(
+                    intent.getAction())) {
+                return;
+            }
+
+            currentPosition = intent.getIntExtra(
+                    PlaybackService.EXTRA_POSITION, 0);
+
+            currentDuration = intent.getIntExtra(
+                    PlaybackService.EXTRA_DURATION, 0);
+
+            boolean prepared = intent.getBooleanExtra(
+                    PlaybackService.EXTRA_PREPARED, false);
+
+            boolean playing = intent.getBooleanExtra(
+                    PlaybackService.EXTRA_PLAYING, false);
+
+            if (seekBar != null && !userSeeking) {
+                if (currentDuration > 0) {
+                    seekBar.setMax(currentDuration);
+                    seekBar.setProgress(
+                            Math.min(currentPosition, currentDuration));
+                } else {
+                    seekBar.setProgress(0);
+                }
+            }
+
+            if (elapsedText != null) {
+                elapsedText.setText(formatTime(currentPosition));
+            }
+
+            if (durationText != null) {
+                durationText.setText(formatTime(currentDuration));
+            }
+
+            if (statusText != null && prepared) {
+                statusText.setText(
+                        playing ? "▶ Playing" : "Ⅱ Paused");
+            }
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        currentTheme = getSharedPreferences(PREFS, MODE_PRIVATE)
-                .getInt(THEME_KEY, PURPLE);
-
-        applyTheme();
+        registerProgressReceiver();
         createScreen();
     }
 
-    private void applyTheme() {
+    private void registerProgressReceiver() {
+        IntentFilter filter = new IntentFilter(
+                PlaybackService.ACTION_PROGRESS);
 
-        switch (currentTheme) {
-
-            case RED:
-                backgroundColor = Color.rgb(22, 12, 18);
-                panelColor = Color.rgb(55, 27, 38);
-                accentColor = Color.rgb(255, 65, 95);
-                textColor = Color.WHITE;
-                secondaryTextColor = Color.rgb(215, 190, 200);
-                break;
-
-            case BLUE:
-                backgroundColor = Color.rgb(8, 18, 32);
-                panelColor = Color.rgb(20, 42, 65);
-                accentColor = Color.rgb(35, 190, 255);
-                textColor = Color.WHITE;
-                secondaryTextColor = Color.rgb(185, 215, 235);
-                break;
-
-            case LIGHT:
-                backgroundColor = Color.rgb(246, 245, 252);
-                panelColor = Color.rgb(228, 225, 242);
-                accentColor = Color.rgb(112, 82, 255);
-                textColor = Color.rgb(30, 28, 45);
-                secondaryTextColor = Color.rgb(95, 92, 110);
-                break;
-
-            default:
-                backgroundColor = Color.rgb(15, 17, 25);
-                panelColor = Color.rgb(34, 36, 50);
-                accentColor = Color.rgb(112, 82, 255);
-                textColor = Color.WHITE;
-                secondaryTextColor = Color.LTGRAY;
-                break;
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(
+                    progressReceiver,
+                    filter,
+                    Context.RECEIVER_NOT_EXPORTED
+            );
+        } else {
+            registerReceiver(progressReceiver, filter);
         }
-    }
 
-    private GradientDrawable rounded(int color, int radius) {
-
-        GradientDrawable drawable = new GradientDrawable();
-        drawable.setColor(color);
-        drawable.setCornerRadius(dp(radius));
-
-        return drawable;
+        receiverRegistered = true;
     }
 
     private void createScreen() {
+        int bg = backgroundColors[themeIndex];
+        int fg = textColors[themeIndex];
 
-        root = new LinearLayout(this);
+        ScrollView scrollView = new ScrollView(this);
+        scrollView.setFillViewport(true);
+        scrollView.setBackgroundColor(bg);
+
+        LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(22), dp(25), dp(22), dp(24));
-        root.setBackgroundColor(backgroundColor);
+        root.setPadding(22, 24, 22, 28);
+        root.setGravity(Gravity.CENTER_HORIZONTAL);
+
+        scrollView.addView(root);
 
         TextView brand = new TextView(this);
-        brand.setText("♫  SUNO BY BHUVAN");
+        brand.setText("SUNO");
+        brand.setTextColor(fg);
         brand.setTextSize(15);
-        brand.setTextColor(accentColor);
-        brand.setTypeface(null, Typeface.BOLD);
-
-        root.addView(brand);
+        brand.setLetterSpacing(0.3f);
+        brand.setGravity(Gravity.CENTER);
+        root.addView(brand, matchWrap());
 
         TextView title = new TextView(this);
-        title.setText("Your music.");
-        title.setTextSize(32);
-        title.setTextColor(textColor);
-        title.setTypeface(null, Typeface.BOLD);
-
-        LinearLayout.LayoutParams titleParams =
-                new LinearLayout.LayoutParams(-1, -2);
-
-        titleParams.topMargin = dp(12);
-        root.addView(title, titleParams);
+        title.setText("Suno by Bhuvan");
+        title.setTextColor(fg);
+        title.setTextSize(29);
+        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        title.setGravity(Gravity.CENTER);
+        title.setPadding(0, 8, 0, 4);
+        root.addView(title, matchWrap());
 
         TextView subtitle = new TextView(this);
-        subtitle.setText("Your vibe. Your rules.");
-        subtitle.setTextSize(15);
-        subtitle.setTextColor(secondaryTextColor);
+        subtitle.setText("Your music. Your vibe.");
+        subtitle.setTextColor(fg);
+        subtitle.setAlpha(0.75f);
+        subtitle.setTextSize(14);
+        subtitle.setGravity(Gravity.CENTER);
+        root.addView(subtitle, matchWrap());
 
-        root.addView(subtitle);
+        currentSongText = new TextView(this);
+        currentSongText.setText("Choose a song to get started");
+        currentSongText.setTextColor(fg);
+        currentSongText.setTextSize(19);
+        currentSongText.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        currentSongText.setGravity(Gravity.CENTER);
+        currentSongText.setPadding(0, 30, 0, 8);
+        root.addView(currentSongText, matchWrap());
 
-        TextView musicIcon = new TextView(this);
-        musicIcon.setText("♫");
-        musicIcon.setTextSize(76);
-        musicIcon.setGravity(Gravity.CENTER);
-        musicIcon.setTextColor(Color.WHITE);
-        musicIcon.setBackground(rounded(accentColor, 28));
-
-        LinearLayout.LayoutParams iconParams =
-                new LinearLayout.LayoutParams(-1, dp(155));
-
-        iconParams.topMargin = dp(24);
-        root.addView(musicIcon, iconParams);
-
-        songName = new TextView(this);
-        songName.setText("No song selected");
-        songName.setTextSize(19);
-        songName.setTextColor(textColor);
-        songName.setTypeface(null, Typeface.BOLD);
-
-        LinearLayout.LayoutParams songParams =
-                new LinearLayout.LayoutParams(-1, -2);
-
-        songParams.topMargin = dp(22);
-        root.addView(songName, songParams);
-
-        status = new TextView(this);
-        status.setText("Choose music from your phone.");
-        status.setTextSize(14);
-        status.setTextColor(secondaryTextColor);
-
-        LinearLayout.LayoutParams statusParams =
-                new LinearLayout.LayoutParams(-1, -2);
-
-        statusParams.topMargin = dp(6);
-        root.addView(status, statusParams);
+        statusText = new TextView(this);
+        statusText.setText("Ready to play");
+        statusText.setTextColor(fg);
+        statusText.setGravity(Gravity.CENTER);
+        statusText.setTextSize(13);
+        statusText.setPadding(0, 0, 0, 18);
+        root.addView(statusText, matchWrap());
 
         seekBar = new SeekBar(this);
-        seekBar.setMax(1000);
-        seekBar.setProgressTintList(
-                android.content.res.ColorStateList.valueOf(accentColor)
-        );
-        seekBar.setThumbTintList(
-                android.content.res.ColorStateList.valueOf(accentColor)
-        );
+        seekBar.setMax(100);
+        root.addView(seekBar, matchWrap());
 
-        LinearLayout.LayoutParams seekParams =
-                new LinearLayout.LayoutParams(-1, -2);
+        LinearLayout times = new LinearLayout(this);
+        times.setOrientation(LinearLayout.HORIZONTAL);
+        times.setGravity(Gravity.CENTER_VERTICAL);
 
-        seekParams.topMargin = dp(16);
-        root.addView(seekBar, seekParams);
+        elapsedText = new TextView(this);
+        elapsedText.setText("00:00");
+        elapsedText.setTextColor(fg);
+        elapsedText.setTextSize(12);
 
-        LinearLayout timeRow = new LinearLayout(this);
-        timeRow.setOrientation(LinearLayout.HORIZONTAL);
+        durationText = new TextView(this);
+        durationText.setText("00:00");
+        durationText.setTextColor(fg);
+        durationText.setTextSize(12);
+        durationText.setGravity(Gravity.END);
 
-        currentTime = new TextView(this);
-        currentTime.setText("00:00");
-        currentTime.setTextColor(secondaryTextColor);
+        times.addView(elapsedText,
+                new LinearLayout.LayoutParams(0, -2, 1));
 
-        totalTime = new TextView(this);
-        totalTime.setText("00:00");
-        totalTime.setGravity(Gravity.END);
-        totalTime.setTextColor(secondaryTextColor);
+        times.addView(durationText,
+                new LinearLayout.LayoutParams(0, -2, 1));
 
-        timeRow.addView(
-                currentTime,
-                new LinearLayout.LayoutParams(0, -2, 1)
-        );
+        root.addView(times, matchWrap());
 
-        timeRow.addView(
-                totalTime,
-                new LinearLayout.LayoutParams(0, -2, 1)
-        );
+        seekBar.setOnSeekBarChangeListener(
+                new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(
+                    SeekBar bar, int progress, boolean fromUser) {
+                if (fromUser) {
+                    elapsedText.setText(formatTime(progress));
+                }
+            }
 
-        root.addView(timeRow);
+            @Override
+            public void onStartTrackingTouch(SeekBar bar) {
+                userSeeking = true;
+            }
 
-        Button chooseButton =
-                createButton("＋  Choose a song", panelColor);
+            @Override
+            public void onStopTrackingTouch(SeekBar bar) {
+                userSeeking = false;
 
-        chooseButton.setOnClickListener(v -> chooseAudio());
+                if (currentDuration > 0 && currentIndex >= 0) {
+                    Intent intent = new Intent(
+                            MainActivity.this,
+                            PlaybackService.class);
 
-        addButton(chooseButton, 20);
+                    intent.setAction(PlaybackService.ACTION_SEEK);
+                    intent.putExtra(
+                            PlaybackService.EXTRA_SEEK_POSITION,
+                            bar.getProgress());
 
-        Button folderButton =
-                createButton("📁  Select music folders", panelColor);
+                    startService(intent);
+                }
+            }
+        });
 
-        folderButton.setOnClickListener(v -> chooseFolders());
+        addButton(root, "＋  Choose Songs", v -> chooseAudio());
+        addButton(root, "📁  Scan Music Folder", v -> chooseFolder());
 
-        addButton(folderButton, 10);
+        LinearLayout controls = new LinearLayout(this);
+        controls.setGravity(Gravity.CENTER);
+        controls.setOrientation(LinearLayout.HORIZONTAL);
 
-        playButton = createButton("▶  Play", accentColor);
-        playButton.setOnClickListener(v -> playCurrentSong());
+        Button previous = makeButton("⏮");
+        Button play = makeButton("▶  PLAY");
+        Button pause = makeButton("Ⅱ  PAUSE");
+        Button next = makeButton("⏭");
 
-        addButton(playButton, 10);
+        previous.setOnClickListener(v -> playPrevious());
+        play.setOnClickListener(v -> playCurrent());
+        pause.setOnClickListener(v -> pauseCurrent());
+        next.setOnClickListener(v -> playNext());
 
-        pauseButton = createButton("Ⅱ  Pause", panelColor);
-        pauseButton.setOnClickListener(v -> pauseCurrentSong());
+        controls.addView(previous, new LinearLayout.LayoutParams(
+                0, 52, 1));
+        controls.addView(play, new LinearLayout.LayoutParams(
+                0, 52, 2));
+        controls.addView(pause, new LinearLayout.LayoutParams(
+                0, 52, 2));
+        controls.addView(next, new LinearLayout.LayoutParams(
+                0, 52, 1));
 
-        addButton(pauseButton, 10);
+        root.addView(controls, matchWrap());
 
-        LinearLayout navigation = new LinearLayout(this);
-        navigation.setOrientation(LinearLayout.HORIZONTAL);
+        addButton(root, "🎨  Change Theme", v -> {
+            themeIndex = (themeIndex + 1) % backgroundColors.length;
+            createScreen();
+            refreshSongList();
+            updateSongDisplay();
 
-        Button previousButton =
-                createButton("⏮ Previous", panelColor);
+            if (currentDuration > 0) {
+                seekBar.setMax(currentDuration);
+                seekBar.setProgress(currentPosition);
+                elapsedText.setText(formatTime(currentPosition));
+                durationText.setText(formatTime(currentDuration));
+            }
+        });
 
-        previousButton.setOnClickListener(v -> previousSong());
+        TextView libraryTitle = new TextView(this);
+        libraryTitle.setText("YOUR MUSIC LIBRARY");
+        libraryTitle.setTextColor(fg);
+        libraryTitle.setTextSize(15);
+        libraryTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        libraryTitle.setPadding(0, 28, 0, 12);
+        root.addView(libraryTitle, matchWrap());
 
-        Button nextButton =
-                createButton("Next ⏭", panelColor);
+        songList = new LinearLayout(this);
+        songList.setOrientation(LinearLayout.VERTICAL);
+        root.addView(songList, matchWrap());
 
-        nextButton.setOnClickListener(v -> nextSong());
+        setContentView(scrollView);
 
-        LinearLayout.LayoutParams navParams =
-                new LinearLayout.LayoutParams(0, dp(52), 1);
-
-        navParams.setMargins(dp(4), dp(10), dp(4), 0);
-
-        navigation.addView(previousButton, navParams);
-        navigation.addView(nextButton, navParams);
-
-        root.addView(navigation);
-
-        Button themeButton =
-                createButton("🎨  Change theme", panelColor);
-
-        themeButton.setOnClickListener(v -> cycleTheme());
-
-        addButton(themeButton, 18);
-
-        themeLabel = new TextView(this);
-        themeLabel.setText("Theme: " + getThemeName());
-        themeLabel.setTextColor(secondaryTextColor);
-        themeLabel.setTextSize(12);
-        themeLabel.setGravity(Gravity.CENTER);
-
-        LinearLayout.LayoutParams themeParams =
-                new LinearLayout.LayoutParams(-1, -2);
-
-        themeParams.topMargin = dp(10);
-        root.addView(themeLabel, themeParams);
-
-        TextView footer = new TextView(this);
-        footer.setText("SUNO • YOUR PERSONAL MUSIC SPACE");
-        footer.setTextSize(11);
-        footer.setTextColor(secondaryTextColor);
-        footer.setGravity(Gravity.CENTER);
-
-        LinearLayout.LayoutParams footerParams =
-                new LinearLayout.LayoutParams(-1, -2);
-
-        footerParams.topMargin = dp(20);
-        root.addView(footer, footerParams);
-
-        setContentView(root);
+        refreshSongList();
+        updateSongDisplay();
     }
 
-    private void addButton(Button button, int topMargin) {
-
-        LinearLayout.LayoutParams params =
-                new LinearLayout.LayoutParams(-1, dp(52));
-
-        params.topMargin = dp(topMargin);
-        root.addView(button, params);
+    private LinearLayout.LayoutParams matchWrap() {
+        return new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
     }
 
-    private Button createButton(String text, int color) {
-
+    private Button makeButton(String text) {
         Button button = new Button(this);
         button.setText(text);
-        button.setAllCaps(false);
-        button.setTextSize(14);
-        button.setTextColor(
-                currentTheme == LIGHT && color != accentColor
-                        ? textColor : Color.WHITE
-        );
-        button.setBackground(rounded(color, 17));
-
+        button.setTextSize(12);
         return button;
     }
 
-    private void chooseAudio() {
+    private void addButton(
+            LinearLayout parent,
+            String text,
+            View.OnClickListener listener) {
 
+        Button button = makeButton(text);
+        button.setTextSize(14);
+        button.setOnClickListener(listener);
+
+        LinearLayout.LayoutParams params = matchWrap();
+        params.setMargins(0, 7, 0, 7);
+        parent.addView(button, params);
+    }
+
+    private void chooseAudio() {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("audio/*");
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
 
         startActivityForResult(intent, PICK_AUDIO);
     }
 
-    private void chooseFolders() {
+    private void chooseFolder() {
+        Intent intent = new Intent(
+                Intent.ACTION_OPEN_DOCUMENT_TREE);
 
-        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
-
-        intent.addFlags(
-                Intent.FLAG_GRANT_READ_URI_PERMISSION
-                        | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
-        );
-
-        startActivityForResult(intent, PICK_FOLDERS);
+        startActivityForResult(intent, PICK_FOLDER);
     }
 
     @Override
     protected void onActivityResult(
-            int requestCode,
-            int resultCode,
-            Intent data) {
+            int requestCode, int resultCode, Intent data) {
 
         super.onActivityResult(requestCode, resultCode, data);
 
@@ -387,263 +372,271 @@ public class MainActivity extends Activity {
         }
 
         if (requestCode == PICK_AUDIO) {
+            int before = songs.size();
 
-            if (data.getClipData() != null) {
+            try {
+                if (data.getClipData() != null) {
+                    ClipData clip = data.getClipData();
 
-                android.content.ClipData clip = data.getClipData();
-
-                for (int i = 0; i < clip.getItemCount(); i++) {
-                    addSong(clip.getItemAt(i).getUri());
+                    for (int i = 0; i < clip.getItemCount(); i++) {
+                        Uri uri = clip.getItemAt(i).getUri();
+                        saveReadPermission(uri, data);
+                        addSong(uri);
+                    }
+                } else if (data.getData() != null) {
+                    Uri uri = data.getData();
+                    saveReadPermission(uri, data);
+                    addSong(uri);
                 }
-
-            } else if (data.getData() != null) {
-
-                addSong(data.getData());
+            } catch (Exception e) {
+                Toast.makeText(this,
+                        "Could not open selected songs",
+                        Toast.LENGTH_LONG).show();
             }
 
+            refreshSongList();
             updateSongDisplay();
 
-        } else if (requestCode == PICK_FOLDERS) {
+            Toast.makeText(this,
+                    (songs.size() - before) + " new song(s) added",
+                    Toast.LENGTH_SHORT).show();
+        }
 
-            Uri folderUri = data.getData();
+        if (requestCode == PICK_FOLDER) {
+            Uri treeUri = data.getData();
 
-            if (folderUri != null) {
-
-                try {
-                    getContentResolver().takePersistableUriPermission(
-                            folderUri,
-                            Intent.FLAG_GRANT_READ_URI_PERMISSION
-                    );
-                } catch (Exception ignored) {
-                }
-
-                if (!selectedFolders.contains(folderUri)) {
-                    selectedFolders.add(folderUri);
-                }
-
-                status.setText(
-                        selectedFolders.size()
-                                + " folder(s) selected. Folder scanning is not implemented yet."
-                );
-
-                Toast.makeText(
-                        this,
-                        "Folder permission saved",
-                        Toast.LENGTH_SHORT
-                ).show();
+            if (treeUri == null) {
+                return;
             }
+
+            try {
+                int flags = data.getFlags()
+                        & (Intent.FLAG_GRANT_READ_URI_PERMISSION
+                        | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+
+                getContentResolver().takePersistableUriPermission(
+                        treeUri, flags);
+
+                statusText.setText("Scanning folder...");
+                scanFolder(treeUri);
+
+            } catch (Exception e) {
+                Toast.makeText(this,
+                        "Folder permission failed",
+                        Toast.LENGTH_LONG).show();
+            }
+        }
+    }
+
+    private void saveReadPermission(Uri uri, Intent data) {
+        try {
+            int flags = data.getFlags()
+                    & (Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+
+            getContentResolver().takePersistableUriPermission(
+                    uri, flags);
+        } catch (Exception ignored) {
         }
     }
 
     private void addSong(Uri uri) {
-
-        if (uri == null || selectedSongs.contains(uri)) {
+        if (uri == null) {
             return;
         }
 
-        try {
-            getContentResolver().takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION
-            );
-        } catch (Exception ignored) {
+        String key = uri.toString();
+
+        if (knownSongs.contains(key)) {
+            return;
         }
 
-        selectedSongs.add(uri);
-        selectedSongNames.add(getAudioName(uri));
+        String name = getSongName(uri);
 
-        if (currentSongIndex == -1) {
-            currentSongIndex = 0;
+        knownSongs.add(key);
+        songs.add(uri);
+        songNames.add(name);
+
+        if (currentIndex == -1) {
+            currentIndex = 0;
         }
     }
 
-    private String getAudioName(Uri uri) {
+    private String getSongName(Uri uri) {
+        Cursor cursor = null;
 
-        try (Cursor cursor = getContentResolver().query(
-                uri, null, null, null, null)) {
+        try {
+            cursor = getContentResolver().query(
+                    uri,
+                    new String[]{OpenableColumns.DISPLAY_NAME},
+                    null, null, null);
 
             if (cursor != null && cursor.moveToFirst()) {
+                int column = cursor.getColumnIndex(
+                        OpenableColumns.DISPLAY_NAME);
 
-                int index = cursor.getColumnIndex(
-                        OpenableColumns.DISPLAY_NAME
-                );
+                if (column >= 0) {
+                    String name = cursor.getString(column);
 
-                if (index >= 0) {
-                    String name = cursor.getString(index);
-
-                    if (name != null) {
+                    if (name != null && !name.isEmpty()) {
                         return name;
                     }
                 }
             }
-
         } catch (Exception ignored) {
+        } finally {
+            if (cursor != null) {
+                cursor.close();
+            }
         }
 
-        return "Selected audio";
+        return "Unknown song";
     }
 
-    private void updateSongDisplay() {
-
-        if (selectedSongs.isEmpty()) {
-            songName.setText("No song selected");
-            status.setText("Choose a song from your phone.");
-            return;
-        }
-
-        if (currentSongIndex < 0
-                || currentSongIndex >= selectedSongNames.size()) {
-            currentSongIndex = 0;
-        }
-
-        songName.setText(selectedSongNames.get(currentSongIndex));
-
-        status.setText(
-                selectedSongs.size()
-                        + " song(s) selected. Tap Play to start."
-        );
-    }
-
-    private void playCurrentSong() {
-
-        if (selectedSongs.isEmpty() || currentSongIndex < 0) {
-            chooseAudio();
-            return;
-        }
-
-        Uri uri = selectedSongs.get(currentSongIndex);
-
-        Intent intent = new Intent(this, PlaybackService.class);
-        intent.setAction(PlaybackService.ACTION_PLAY);
-        intent.putExtra(
-                PlaybackService.EXTRA_AUDIO_URI,
-                uri.toString()
-        );
-        intent.putExtra(
-                PlaybackService.EXTRA_SONG_NAME,
-                selectedSongNames.get(currentSongIndex)
-        );
+    private void scanFolder(Uri treeUri) {
+        int before = songs.size();
 
         try {
+            String rootId = DocumentsContract.getTreeDocumentId(
+                    treeUri);
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(intent);
+            scanDocument(treeUri, rootId, 0);
+
+            refreshSongList();
+            updateSongDisplay();
+
+            int added = songs.size() - before;
+
+            if (added > 0) {
+                statusText.setText("Found " + added + " new song(s)");
             } else {
-                startService(intent);
+                statusText.setText("No new audio files found");
             }
 
-            songName.setText(selectedSongNames.get(currentSongIndex));
-            status.setText("Starting playback...");
+            Toast.makeText(this,
+                    "Found " + added + " new audio file(s)",
+                    Toast.LENGTH_LONG).show();
 
         } catch (Exception e) {
-
-            status.setText("Couldn't start playback.");
-            Toast.makeText(
-                    this,
-                    "Playback could not start.",
-                    Toast.LENGTH_LONG
-            ).show();
+            statusText.setText("Folder scan failed");
+            Toast.makeText(this,
+                    "Could not scan this folder. Try another folder.",
+                    Toast.LENGTH_LONG).show();
         }
     }
 
-    private void pauseCurrentSong() {
+    private void scanDocument(
+            Uri treeUri, String documentId, int depth) {
 
-        Intent intent = new Intent(this, PlaybackService.class);
-        intent.setAction(PlaybackService.ACTION_PAUSE);
-
-        startService(intent);
-
-        status.setText("Pause requested");
-    }
-
-    private void nextSong() {
-
-        if (selectedSongs.isEmpty()) {
-            chooseAudio();
+        if (depth > 20) {
             return;
         }
 
-        currentSongIndex++;
+        Uri childrenUri =
+                DocumentsContract.buildChildDocumentsUriUsingTree(
+                        treeUri, documentId);
 
-        if (currentSongIndex >= selectedSongs.size()) {
-            currentSongIndex = 0;
+        String[] columns = {
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                DocumentsContract.Document.COLUMN_MIME_TYPE
+        };
+
+        ArrayList<String> directoryIds = new ArrayList<>();
+
+        Cursor cursor = null;
+
+        try {
+            cursor = getContentResolver().query(
+                    childrenUri, columns, null, null, null);
+
+            if (cursor == null) {
+                return;
+            }
+
+            int idColumn = cursor.getColumnIndex(
+                    DocumentsContract.Document.COLUMN_DOCUMENT_ID);
+
+            int nameColumn = cursor.getColumnIndex(
+                    DocumentsContract.Document.COLUMN_DISPLAY_NAME);
+
+            int mimeColumn = cursor.getColumnIndex(
+                    DocumentsContract.Document.COLUMN_MIME_TYPE);
+
+            while (cursor.moveToNext()) {
+                String childId = cursor.getString(idColumn);
+                String name = cursor.getString(nameColumn);
+                String mime = cursor.getString(mimeColumn);
+
+                if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime)) {
+                    directoryIds.add(childId);
+                } else if (isAudioFile(name, mime)) {
+                    Uri fileUri =
+                            DocumentsContract.buildDocumentUriUsingTree(
+                                    treeUri, childId);
+
+                    addSong(fileUri);
+                }
+            }
+
+        } catch (Exception ignored) {
+        } finally {
+            if (cursor != null) {
+                cursor.close();
+            }
         }
 
-        updateSongDisplay();
-        playCurrentSong();
+        for (String directoryId : directoryIds) {
+            scanDocument(treeUri, directoryId, depth + 1);
+        }
     }
 
-    private void previousSong() {
+    private boolean isAudioFile(String name, String mime) {
+        if (mime != null && mime.startsWith("audio/")) {
+            return true;
+        }
 
-        if (selectedSongs.isEmpty()) {
-            chooseAudio();
+        if (name == null) {
+            return false;
+        }
+
+        String lower = name.toLowerCase(Locale.ROOT);
+
+        String[] extensions = {
+                ".mp3", ".m4a", ".aac", ".ogg", ".wav",
+                ".flac", ".opus", ".wma", ".3gp",
+                ".amr", ".mid", ".midi", ".mp4"
+        };
+
+        for (String extension : extensions) {
+            if (lower.endsWith(extension)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void refreshSongList() {
+        if (songList == null) {
             return;
         }
 
-        currentSongIndex--;
+        songList.removeAllViews();
 
-        if (currentSongIndex < 0) {
-            currentSongIndex = selectedSongs.size() - 1;
+        if (songs.isEmpty()) {
+            TextView empty = new TextView(this);
+            empty.setText("No songs yet. Choose songs or scan a folder.");
+            empty.setTextColor(textColors[themeIndex]);
+            empty.setTextSize(14);
+            empty.setPadding(0, 5, 0, 15);
+            songList.addView(empty, matchWrap());
+            return;
         }
 
-        updateSongDisplay();
-        playCurrentSong();
-    }
+        for (int i = 0; i < songNames.size(); i++) {
+            final int index = i;
 
-    private void cycleTheme() {
-
-        currentTheme = (currentTheme + 1) % 4;
-
-        getSharedPreferences(PREFS, MODE_PRIVATE)
-                .edit()
-                .putInt(THEME_KEY, currentTheme)
-                .apply();
-
-        applyTheme();
-        createScreen();
-
-        Toast.makeText(
-                this,
-                "Theme: " + getThemeName(),
-                Toast.LENGTH_SHORT
-        ).show();
-    }
-
-    private String getThemeName() {
-
-        switch (currentTheme) {
-            case RED:
-                return "Red Pulse";
-
-            case BLUE:
-                return "Ocean Blue";
-
-            case LIGHT:
-                return "Light Mode";
-
-            default:
-                return "Purple Neon";
-        }
-    }
-
-    private String formatTime(int milliseconds) {
-
-        int totalSeconds = Math.max(0, milliseconds / 1000);
-        int minutes = totalSeconds / 60;
-        int seconds = totalSeconds % 60;
-
-        return String.format(
-                Locale.getDefault(),
-                "%02d:%02d",
-                minutes,
-                seconds
-        );
-    }
-
-    @Override
-    protected void onDestroy() {
-        handler.removeCallbacks(updateSeekBar);
-        super.onDestroy();
-    }
-}
-    
+            TextView item = new TextView(this);
+            item.setText((i + 1) + ".  " + songNames.get(i));
+            item.s
