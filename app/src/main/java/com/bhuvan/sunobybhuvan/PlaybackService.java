@@ -10,7 +10,9 @@ import android.media.AudioAttributes;
 import android.media.MediaPlayer;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 
 import java.io.IOException;
 
@@ -25,15 +27,44 @@ public class PlaybackService extends Service {
     public static final String ACTION_STOP =
             "com.bhuvan.sunobybhuvan.STOP";
 
+    public static final String ACTION_SEEK =
+            "com.bhuvan.sunobybhuvan.SEEK";
+
+    public static final String ACTION_PROGRESS =
+            "com.bhuvan.sunobybhuvan.PROGRESS";
+
     public static final String EXTRA_AUDIO_URI = "audio_uri";
     public static final String EXTRA_SONG_NAME = "song_name";
+    public static final String EXTRA_POSITION = "position";
+    public static final String EXTRA_DURATION = "duration";
+    public static final String EXTRA_PLAYING = "playing";
+    public static final String EXTRA_SEEK_POSITION = "seek_position";
+    public static final String EXTRA_PREPARED = "prepared";
 
     private static final String CHANNEL_ID = "suno_playback";
     private static final int NOTIFICATION_ID = 1001;
 
     private MediaPlayer player;
+
     private String songName = "Suno by Bhuvan";
+
     private boolean prepared = false;
+    private boolean isForeground = false;
+
+    private final Handler handler =
+            new Handler(Looper.getMainLooper());
+
+    private final Runnable progressRunnable = new Runnable() {
+        @Override
+        public void run() {
+
+            sendProgress();
+
+            if (prepared && player != null) {
+                handler.postDelayed(this, 500);
+            }
+        }
+    };
 
     @Override
     public void onCreate() {
@@ -42,7 +73,10 @@ public class PlaybackService extends Service {
     }
 
     @Override
-    public int onStartCommand(Intent intent, int flags, int startId) {
+    public int onStartCommand(
+            Intent intent,
+            int flags,
+            int startId) {
 
         if (intent == null) {
             return START_NOT_STICKY;
@@ -52,209 +86,61 @@ public class PlaybackService extends Service {
 
         if (ACTION_PLAY.equals(action)) {
 
-            String uriString = intent.getStringExtra(EXTRA_AUDIO_URI);
-            String receivedName = intent.getStringExtra(EXTRA_SONG_NAME);
+            String uriString =
+                    intent.getStringExtra(EXTRA_AUDIO_URI);
 
-            if (receivedName != null && !receivedName.isEmpty()) {
+            String receivedName =
+                    intent.getStringExtra(EXTRA_SONG_NAME);
+
+            if (receivedName != null
+                    && !receivedName.isEmpty()) {
                 songName = receivedName;
             }
 
             if (uriString != null) {
-                startForeground(
-                        NOTIFICATION_ID,
-                        buildNotification(false)
-                );
+
+                if (Build.VERSION.SDK_INT
+                        >= Build.VERSION_CODES.O) {
+
+                    startForeground(
+                            NOTIFICATION_ID,
+                            buildNotification(false)
+                    );
+
+                } else {
+
+                    startForeground(
+                            NOTIFICATION_ID,
+                            buildNotification(false)
+                    );
+                }
+
+                isForeground = true;
 
                 prepareAndPlay(Uri.parse(uriString));
+
             } else if (prepared && player != null) {
-                player.start();
-                updateNotification(true);
+
+                try {
+                    player.start();
+                    updateNotification(true);
+                    startProgressUpdates();
+                    sendProgress();
+
+                } catch (IllegalStateException ignored) {
+                }
             }
 
         } else if (ACTION_PAUSE.equals(action)) {
 
-            if (player != null && prepared && player.isPlaying()) {
+            if (player != null
+                    && prepared
+                    && player.isPlaying()) {
+
                 player.pause();
             }
 
             updateNotification(false);
+            sendProgress();
 
-        } else if (ACTION_STOP.equals(action)) {
-
-            stopPlayback();
-            stopForeground(true);
-            stopSelf();
-
-        }
-
-        return START_NOT_STICKY;
-    }
-
-    private void prepareAndPlay(Uri uri) {
-
-        releasePlayer();
-
-        try {
-            player = new MediaPlayer();
-
-            player.setAudioAttributes(
-                    new AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_MEDIA)
-                            .setContentType(
-                                    AudioAttributes.CONTENT_TYPE_MUSIC
-                            )
-                            .build()
-            );
-
-            player.setDataSource(this, uri);
-
-            player.setOnPreparedListener(mp -> {
-                prepared = true;
-                mp.start();
-                updateNotification(true);
-            });
-
-            player.setOnCompletionListener(mp -> {
-                updateNotification(false);
-            });
-
-            player.setOnErrorListener((mp, what, extra) -> {
-                releasePlayer();
-                stopForeground(true);
-                stopSelf();
-                return true;
-            });
-
-            player.prepareAsync();
-
-        } catch (IOException | IllegalStateException e) {
-            releasePlayer();
-            stopForeground(true);
-            stopSelf();
-        }
-    }
-
-    private Notification buildNotification(boolean playing) {
-
-        Intent openApp = new Intent(this, MainActivity.class);
-
-        PendingIntent contentIntent = PendingIntent.getActivity(
-                this,
-                0,
-                openApp,
-                PendingIntent.FLAG_UPDATE_CURRENT
-                        | PendingIntent.FLAG_IMMUTABLE
-        );
-
-        Intent controlIntent = new Intent(
-                this,
-                PlaybackService.class
-        );
-
-        controlIntent.setAction(
-                playing ? ACTION_PAUSE : ACTION_PLAY
-        );
-
-        PendingIntent controlPendingIntent = PendingIntent.getService(
-                this,
-                1,
-                controlIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT
-                        | PendingIntent.FLAG_IMMUTABLE
-        );
-
-        Notification.Builder builder;
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            builder = new Notification.Builder(this, CHANNEL_ID);
-        } else {
-            builder = new Notification.Builder(this);
-        }
-
-        builder.setContentTitle(songName)
-                .setContentText(
-                        playing
-                                ? "Playing • Suno by Bhuvan"
-                                : "Paused • Suno by Bhuvan"
-                )
-                .setSmallIcon(android.R.drawable.ic_media_play)
-                .setContentIntent(contentIntent)
-                .setOngoing(playing)
-                .addAction(
-                        playing
-                                ? android.R.drawable.ic_media_pause
-                                : android.R.drawable.ic_media_play,
-                        playing ? "Pause" : "Play",
-                        controlPendingIntent
-                );
-
-        return builder.build();
-    }
-
-    private void updateNotification(boolean playing) {
-
-        NotificationManager manager =
-                (NotificationManager) getSystemService(
-                        NOTIFICATION_SERVICE
-                );
-
-        if (manager != null) {
-            manager.notify(
-                    NOTIFICATION_ID,
-                    buildNotification(playing)
-            );
-        }
-    }
-
-    private void createNotificationChannel() {
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-
-            NotificationChannel channel = new NotificationChannel(
-                    CHANNEL_ID,
-                    "Suno Music Playback",
-                    NotificationManager.IMPORTANCE_LOW
-            );
-
-            channel.setDescription(
-                    "Music playback controls"
-            );
-
-            NotificationManager manager =
-                    getSystemService(NotificationManager.class);
-
-            if (manager != null) {
-                manager.createNotificationChannel(channel);
-            }
-        }
-    }
-
-    private void stopPlayback() {
-        releasePlayer();
-    }
-
-    private void releasePlayer() {
-
-        prepared = false;
-
-        if (player != null) {
-            try {
-                player.release();
-            } catch (Exception ignored) {
-            }
-
-            player = null;
-        }
-    }
-
-    @Override
-    public void onDestroy() {
-        releasePlayer();
-        super.onDestroy();
-    }
-
-    @Override
-    public IBinder onBind(Intent intent) {
-        return null;
-    }
-          }
+        } else if (ACTION_SEEK.equals(action))
