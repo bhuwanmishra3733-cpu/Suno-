@@ -645,4 +645,5 @@ public class MainActivity extends Activity {
         handler.removeCallbacks(updateSeekBar);
         super.onDestroy();
     }
-    }
+}
+    
