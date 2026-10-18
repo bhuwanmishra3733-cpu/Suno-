@@ -639,4 +639,130 @@ public class MainActivity extends Activity {
 
             TextView item = new TextView(this);
             item.setText((i + 1) + ".  " + songNames.get(i));
-            item.s
+                        item.setTextColor(textColors[themeIndex]);
+            item.setTextSize(14);
+            item.setPadding(12, 14, 12, 14);
+
+            item.setBackgroundColor(
+                    themeIndex == 3
+                            ? Color.rgb(225, 225, 225)
+                            : Color.rgb(45, 40, 60));
+
+            LinearLayout.LayoutParams params = matchWrap();
+            params.setMargins(0, 3, 0, 3);
+            songList.addView(item, params);
+
+            item.setOnClickListener(v -> {
+                currentIndex = index;
+                playCurrent();
+            });
+        }
+    }
+
+    private void playCurrent() {
+        if (songs.isEmpty() || currentIndex < 0
+                || currentIndex >= songs.size()) {
+            Toast.makeText(this,
+                    "First choose songs or scan a music folder",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        Uri uri = songs.get(currentIndex);
+
+        Intent intent = new Intent(this, PlaybackService.class);
+        intent.setAction(PlaybackService.ACTION_PLAY);
+        intent.putExtra(
+                PlaybackService.EXTRA_AUDIO_URI, uri.toString());
+        intent.putExtra(
+                PlaybackService.EXTRA_SONG_NAME,
+                songNames.get(currentIndex));
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent);
+            } else {
+                startService(intent);
+            }
+
+            updateSongDisplay();
+            statusText.setText("Loading song...");
+            elapsedText.setText("00:00");
+            durationText.setText("00:00");
+            seekBar.setProgress(0);
+
+        } catch (Exception e) {
+            statusText.setText("Could not start playback");
+            Toast.makeText(this,
+                    "Playback could not start",
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void pauseCurrent() {
+        Intent intent = new Intent(this, PlaybackService.class);
+        intent.setAction(PlaybackService.ACTION_PAUSE);
+        startService(intent);
+    }
+
+    private void playNext() {
+        if (songs.isEmpty()) {
+            return;
+        }
+
+        currentIndex = (currentIndex + 1) % songs.size();
+        playCurrent();
+    }
+
+    private void playPrevious() {
+        if (songs.isEmpty()) {
+            return;
+        }
+
+        currentIndex--;
+
+        if (currentIndex < 0) {
+            currentIndex = songs.size() - 1;
+        }
+
+        playCurrent();
+    }
+
+    private void updateSongDisplay() {
+        if (currentSongText == null) {
+            return;
+        }
+
+        if (currentIndex >= 0 && currentIndex < songNames.size()) {
+            currentSongText.setText(songNames.get(currentIndex));
+        } else {
+            currentSongText.setText("Choose a song to get started");
+        }
+    }
+
+    private String formatTime(int milliseconds) {
+        int totalSeconds = Math.max(0, milliseconds) / 1000;
+        int minutes = totalSeconds / 60;
+        int seconds = totalSeconds % 60;
+
+        return String.format(
+                Locale.getDefault(),
+                "%02d:%02d",
+                minutes,
+                seconds);
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (receiverRegistered) {
+            try {
+                unregisterReceiver(progressReceiver);
+            } catch (Exception ignored) {
+            }
+
+            receiverRegistered = false;
+        }
+
+        super.onDestroy();
+    }
+                             }
