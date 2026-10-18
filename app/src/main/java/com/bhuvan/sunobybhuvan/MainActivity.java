@@ -62,6 +62,7 @@ public class MainActivity extends Activity {
     private final ArrayList<Uri> folders = new ArrayList<>();
 
     private int songIndex = -1;
+    private int loadedIndex = -1;
     private boolean seeking = false;
     private boolean receiverRegistered = false;
 
@@ -601,5 +602,176 @@ public class MainActivity extends Activity {
     private void loadSavedFolders() {
         Set<String> saved =
                 getSharedPreferences(PREFS, MODE_PRIVATE)
-                        .getStringSet(FOLDERS_KEY,
-     
+                        .getStringSet(FOLDERS_KEY, new HashSet<String>());
+
+        folders.clear();
+
+        if (saved == null) return;
+
+        for (String value : saved) {
+            try {
+                folders.add(Uri.parse(value));
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private void scanSavedFolders() {
+        int before = songs.size();
+
+        for (Uri folder : new ArrayList<>(folders)) {
+            scanFolder(folder);
+        }
+
+        if (songs.size() > before) {
+            updateSongDisplay();
+        }
+    }
+
+    private void updateSongDisplay() {
+        if (songIndex >= 0 && songIndex < songNames.size()) {
+            songName.setText(songNames.get(songIndex));
+        } else {
+            songName.setText("No song selected");
+        }
+
+        if (duration == 0) {
+            if (songs.isEmpty()) {
+                status.setText("Choose music from your phone.");
+            } else {
+                status.setText(songs.size() + " song(s) ready");
+            }
+        }
+    }
+
+    private void startSong(int index) {
+        if (index < 0 || index >= songs.size()) return;
+
+        songIndex = index;
+        loadedIndex = index;
+
+        duration = 0;
+        position = 0;
+        playing = false;
+
+        Intent intent = new Intent(this, PlaybackService.class);
+        intent.setAction(PlaybackService.ACTION_PLAY);
+        intent.putExtra(
+                PlaybackService.EXTRA_AUDIO_URI,
+                songs.get(index).toString());
+        intent.putExtra(
+                PlaybackService.EXTRA_SONG_NAME,
+                songNames.get(index));
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent);
+            } else {
+                startService(intent);
+            }
+        } catch (Exception e) {
+            status.setText("Could not start playback");
+            Toast.makeText(this,
+                    "Playback could not start",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        updateSongDisplay();
+        status.setText("Loading song...");
+        currentTime.setText("00:00");
+        totalTime.setText("00:00");
+        seekBar.setProgress(0);
+    }
+
+    private void playSong() {
+        if (songs.isEmpty()) {
+            Toast.makeText(this,
+                    "First choose songs or add a music folder",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        if (songIndex < 0) songIndex = 0;
+
+        if (playing && loadedIndex == songIndex) {
+            return;
+        }
+
+        if (!playing && duration > 0 && loadedIndex == songIndex) {
+            Intent intent = new Intent(this, PlaybackService.class);
+            intent.setAction(PlaybackService.ACTION_PLAY);
+            startService(intent);
+        } else {
+            startSong(songIndex);
+        }
+    }
+
+    private void pauseSong() {
+        Intent intent = new Intent(this, PlaybackService.class);
+        intent.setAction(PlaybackService.ACTION_PAUSE);
+        startService(intent);
+    }
+
+    private void nextSong() {
+        if (songs.isEmpty()) return;
+
+        startSong((songIndex + 1) % songs.size());
+    }
+
+    private void previousSong() {
+        if (songs.isEmpty()) return;
+
+        int index = songIndex - 1;
+        if (index < 0) index = songs.size() - 1;
+
+        startSong(index);
+    }
+
+    private void changeTheme() {
+        theme = (theme + 1) % 5;
+
+        getSharedPreferences(PREFS, MODE_PRIVATE)
+                .edit()
+                .putInt(THEME_KEY, theme)
+                .apply();
+
+        applyTheme();
+        createScreen();
+        updateSongDisplay();
+
+        if (duration > 0) {
+            seekBar.setMax(Math.max(duration, 1));
+            seekBar.setProgress(Math.min(position, duration));
+            currentTime.setText(formatTime(position));
+            totalTime.setText(formatTime(duration));
+            status.setText(playing ? "♫ Now playing" : "Ⅱ Paused");
+        }
+    }
+
+    private String formatTime(int milliseconds) {
+        int totalSeconds = Math.max(0, milliseconds) / 1000;
+        int minutes = totalSeconds / 60;
+        int seconds = totalSeconds % 60;
+
+        return String.format(
+                Locale.getDefault(),
+                "%02d:%02d",
+                minutes,
+                seconds);
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (receiverRegistered) {
+            try {
+                unregisterReceiver(progressReceiver);
+            } catch (Exception ignored) {
+            }
+
+            receiverRegistered = false;
+        }
+
+        super.onDestroy();
+    }
+}
