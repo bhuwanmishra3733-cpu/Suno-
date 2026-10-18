@@ -143,4 +143,341 @@ public class PlaybackService extends Service {
             updateNotification(false);
             sendProgress();
 
-        } else if (ACTION_SEEK.equals(action))
+        } else if (ACTION_SEEK.equals(action)) {
+
+            int position = intent.getIntExtra(
+                    EXTRA_SEEK_POSITION,
+                    0
+            );
+
+            seekToPosition(position);
+
+        } else if (ACTION_STOP.equals(action)) {
+
+            stopPlayback();
+
+            if (isForeground) {
+                stopForeground(true);
+                isForeground = false;
+            }
+
+            stopSelf();
+        }
+
+        return START_NOT_STICKY;
+    }
+
+    private void prepareAndPlay(Uri uri) {
+
+        releasePlayer();
+
+        try {
+
+            player = new MediaPlayer();
+
+            player.setAudioAttributes(
+                    new AudioAttributes.Builder()
+                            .setUsage(
+                                    AudioAttributes.USAGE_MEDIA
+                            )
+                            .setContentType(
+                                    AudioAttributes.CONTENT_TYPE_MUSIC
+                            )
+                            .build()
+            );
+
+            player.setDataSource(this, uri);
+
+            player.setOnPreparedListener(mp -> {
+
+                prepared = true;
+
+                try {
+                    mp.start();
+                } catch (IllegalStateException e) {
+                    sendProgress();
+                    return;
+                }
+
+                updateNotification(true);
+                startProgressUpdates();
+                sendProgress();
+            });
+
+            player.setOnCompletionListener(mp -> {
+
+                handler.removeCallbacks(progressRunnable);
+
+                sendProgress();
+                updateNotification(false);
+            });
+
+            player.setOnErrorListener((mp, what, extra) -> {
+
+                releasePlayer();
+                sendProgress();
+
+                if (isForeground) {
+                    stopForeground(true);
+                    isForeground = false;
+                }
+
+                stopSelf();
+
+                return true;
+            });
+
+            player.prepareAsync();
+
+        } catch (IOException | IllegalStateException e) {
+
+            releasePlayer();
+            sendProgress();
+
+            if (isForeground) {
+                stopForeground(true);
+                isForeground = false;
+            }
+
+            stopSelf();
+        }
+    }
+
+    private void startProgressUpdates() {
+
+        handler.removeCallbacks(progressRunnable);
+        handler.post(progressRunnable);
+    }
+
+    private void sendProgress() {
+
+        int position = 0;
+        int duration = 0;
+        boolean playing = false;
+
+        if (player != null && prepared) {
+
+            try {
+
+                position = player.getCurrentPosition();
+                duration = player.getDuration();
+                playing = player.isPlaying();
+
+            } catch (IllegalStateException ignored) {
+            }
+        }
+
+        Intent progressIntent = new Intent(ACTION_PROGRESS);
+
+        progressIntent.setPackage(getPackageName());
+
+        progressIntent.putExtra(
+                EXTRA_POSITION,
+                position
+        );
+
+        progressIntent.putExtra(
+                EXTRA_DURATION,
+                duration
+        );
+
+        progressIntent.putExtra(
+                EXTRA_PLAYING,
+                playing
+        );
+
+        progressIntent.putExtra(
+                EXTRA_PREPARED,
+                prepared
+        );
+
+        sendBroadcast(progressIntent);
+    }
+
+    private void seekToPosition(int position) {
+
+        if (player == null || !prepared) {
+            return;
+        }
+
+        try {
+
+            int duration = player.getDuration();
+
+            position = Math.max(
+                    0,
+                    Math.min(position, duration)
+            );
+
+            if (Build.VERSION.SDK_INT
+                    >= Build.VERSION_CODES.O) {
+
+                player.seekTo(
+                        position,
+                        MediaPlayer.SEEK_CLOSEST
+                );
+
+            } else {
+
+                player.seekTo(position);
+            }
+
+            sendProgress();
+
+        } catch (IllegalStateException ignored) {
+        }
+    }
+
+    private Notification buildNotification(boolean playing) {
+
+        Intent openApp = new Intent(
+                this,
+                MainActivity.class
+        );
+
+        PendingIntent contentIntent =
+                PendingIntent.getActivity(
+                        this,
+                        0,
+                        openApp,
+                        PendingIntent.FLAG_UPDATE_CURRENT
+                                | PendingIntent.FLAG_IMMUTABLE
+                );
+
+        Intent controlIntent =
+                new Intent(this, PlaybackService.class);
+
+        controlIntent.setAction(
+                playing ? ACTION_PAUSE : ACTION_PLAY
+        );
+
+        PendingIntent controlPendingIntent =
+                PendingIntent.getService(
+                        this,
+                        1,
+                        controlIntent,
+                        PendingIntent.FLAG_UPDATE_CURRENT
+                                | PendingIntent.FLAG_IMMUTABLE
+                );
+
+        Notification.Builder builder;
+
+        if (Build.VERSION.SDK_INT
+                >= Build.VERSION_CODES.O) {
+
+            builder = new Notification.Builder(
+                    this,
+                    CHANNEL_ID
+            );
+
+        } else {
+
+            builder = new Notification.Builder(this);
+        }
+
+        builder.setContentTitle(songName)
+                .setContentText(
+                        playing
+                                ? "Playing • Suno by Bhuvan"
+                                : "Paused • Suno by Bhuvan"
+                )
+                .setSmallIcon(
+                        android.R.drawable.ic_media_play
+                )
+                .setContentIntent(contentIntent)
+                .setOngoing(playing)
+                .addAction(
+                        playing
+                                ? android.R.drawable.ic_media_pause
+                                : android.R.drawable.ic_media_play,
+                        playing ? "Pause" : "Play",
+                        controlPendingIntent
+                );
+
+        return builder.build();
+    }
+
+    private void updateNotification(boolean playing) {
+
+        NotificationManager manager =
+                (NotificationManager) getSystemService(
+                        NOTIFICATION_SERVICE
+                );
+
+        if (manager != null && isForeground) {
+
+            manager.notify(
+                    NOTIFICATION_ID,
+                    buildNotification(playing)
+            );
+        }
+    }
+
+    private void createNotificationChannel() {
+
+        if (Build.VERSION.SDK_INT
+                >= Build.VERSION_CODES.O) {
+
+            NotificationChannel channel =
+                    new NotificationChannel(
+                            CHANNEL_ID,
+                            "Suno Music Playback",
+                            NotificationManager.IMPORTANCE_LOW
+                    );
+
+            channel.setDescription(
+                    "Music playback controls"
+            );
+
+            NotificationManager manager =
+                    getSystemService(
+                            NotificationManager.class
+                    );
+
+            if (manager != null) {
+                manager.createNotificationChannel(channel);
+            }
+        }
+    }
+
+    private void stopPlayback() {
+
+        releasePlayer();
+        sendProgress();
+    }
+
+    private void releasePlayer() {
+
+        handler.removeCallbacks(progressRunnable);
+
+        prepared = false;
+
+        if (player != null) {
+
+            try {
+                player.release();
+            } catch (Exception ignored) {
+            }
+
+            player = null;
+        }
+    }
+
+    @Override
+    public void onDestroy() {
+
+        releasePlayer();
+
+        if (isForeground) {
+            stopForeground(true);
+            isForeground = false;
+        }
+
+        super.onDestroy();
+    }
+
+    @Override
+    public IBinder onBind(Intent intent) {
+        return null;
+    }
+    }
