@@ -11,6 +11,9 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.drawable.Drawable;
 import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
@@ -118,6 +121,7 @@ public class PlaybackService extends Service {
     private boolean prepared = false;
     private boolean isForeground = false;
     private MediaSession mediaSession;
+    private Bitmap logoBitmap;
     private boolean pausedByFocusLoss = false;
     private boolean noisyRegistered = false;
     private int errorStreak = 0;
@@ -457,7 +461,7 @@ public class PlaybackService extends Service {
         sendProgress();
     }
 
-    private void playRelative(int delta) {
+        private void playRelative(int delta) {
         if (library.isEmpty()) {
             stopEverything();
             return;
@@ -753,6 +757,7 @@ public class PlaybackService extends Service {
 
         builder.setContentTitle(title)
                 .setSmallIcon(R.drawable.ic_stat_suno)
+                .setLargeIcon(getLogoBitmap())
                 .setColor(0xFFE11D2E)
                 .setCategory(Notification.CATEGORY_TRANSPORT)
                 .setVisibility(Notification.VISIBILITY_PUBLIC)
@@ -786,6 +791,21 @@ public class PlaybackService extends Service {
         return builder.build();
     }
 
+    private Bitmap getLogoBitmap() {
+        if (logoBitmap == null) {
+            int size = 320;
+            Drawable drawable = getResources().getDrawable(
+                    R.drawable.ic_splash_logo, getTheme());
+            Bitmap bitmap = Bitmap.createBitmap(
+                    size, size, Bitmap.Config.ARGB_8888);
+            Canvas canvas = new Canvas(bitmap);
+            drawable.setBounds(0, 0, size, size);
+            drawable.draw(canvas);
+            logoBitmap = bitmap;
+        }
+        return logoBitmap;
+    }
+
     private void syncMediaSession(boolean playing, String title) {
         if (mediaSession == null) return;
 
@@ -803,6 +823,7 @@ public class PlaybackService extends Service {
         mediaSession.setMetadata(new MediaMetadata.Builder()
                 .putString(MediaMetadata.METADATA_KEY_TITLE, title)
                 .putLong(MediaMetadata.METADATA_KEY_DURATION, duration)
+                .putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, getLogoBitmap())
                 .build());
 
         long actions = PlaybackState.ACTION_PLAY
@@ -900,5 +921,5 @@ public class PlaybackService extends Service {
     public IBinder onBind(Intent intent) {
         return null;
     }
-        }
-        
+                }
+    
