@@ -14,7 +14,10 @@ import android.content.pm.ServiceInfo;
 import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
+import android.media.MediaMetadata;
 import android.media.MediaPlayer;
+import android.media.session.MediaSession;
+import android.media.session.PlaybackState;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
@@ -114,6 +117,7 @@ public class PlaybackService extends Service {
     private MediaPlayer player;
     private boolean prepared = false;
     private boolean isForeground = false;
+    private MediaSession mediaSession;
     private boolean pausedByFocusLoss = false;
     private boolean noisyRegistered = false;
     private int errorStreak = 0;
@@ -167,6 +171,42 @@ public class PlaybackService extends Service {
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
         loadSettings(this);
         createNotificationChannel();
+
+        mediaSession = new MediaSession(this, "SunoSession");
+        mediaSession.setCallback(new MediaSession.Callback() {
+            @Override
+            public void onPlay() {
+                pausedByFocusLoss = false;
+                handlePlay(new Intent());
+            }
+
+            @Override
+            public void onPause() {
+                pausedByFocusLoss = false;
+                pausePlayback();
+            }
+
+            @Override
+            public void onSkipToNext() {
+                playRelative(1);
+            }
+
+            @Override
+            public void onSkipToPrevious() {
+                playRelative(-1);
+            }
+
+            @Override
+            public void onSeekTo(long pos) {
+                seekToPosition((int) pos);
+            }
+
+            @Override
+            public void onStop() {
+                stopEverything();
+            }
+        });
+        mediaSession.setActive(true);
 
         IntentFilter filter =
                 new IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY);
@@ -396,7 +436,7 @@ public class PlaybackService extends Service {
         sendProgress();
     }
 
-        private void resumePlayback() {
+    private void resumePlayback() {
         if (player == null || !prepared) return;
 
         if (!requestAudioFocus()) {
@@ -486,6 +526,7 @@ public class PlaybackService extends Service {
             }
 
             sendProgress();
+            updateNotification();
         } catch (IllegalStateException ignored) {
         }
     }
@@ -700,6 +741,8 @@ public class PlaybackService extends Service {
                 PendingIntent.FLAG_UPDATE_CURRENT
                         | PendingIntent.FLAG_IMMUTABLE);
 
+        syncMediaSession(playing, title);
+
         Notification.Builder builder;
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -733,6 +776,7 @@ public class PlaybackService extends Service {
                         "Stop",
                         serviceIntent(ACTION_STOP, 13))
                 .setStyle(new Notification.MediaStyle()
+                        .setMediaSession(mediaSession.getSessionToken())
                         .setShowActionsInCompactView(0, 1, 2));
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -740,6 +784,44 @@ public class PlaybackService extends Service {
         }
 
         return builder.build();
+    }
+
+    private void syncMediaSession(boolean playing, String title) {
+        if (mediaSession == null) return;
+
+        long position = 0;
+        long duration = 0;
+
+        if (player != null && prepared) {
+            try {
+                position = player.getCurrentPosition();
+                duration = player.getDuration();
+            } catch (IllegalStateException ignored) {
+            }
+        }
+
+        mediaSession.setMetadata(new MediaMetadata.Builder()
+                .putString(MediaMetadata.METADATA_KEY_TITLE, title)
+                .putLong(MediaMetadata.METADATA_KEY_DURATION, duration)
+                .build());
+
+        long actions = PlaybackState.ACTION_PLAY
+                | PlaybackState.ACTION_PAUSE
+                | PlaybackState.ACTION_PLAY_PAUSE
+                | PlaybackState.ACTION_SKIP_TO_NEXT
+                | PlaybackState.ACTION_SKIP_TO_PREVIOUS
+                | PlaybackState.ACTION_SEEK_TO
+                | PlaybackState.ACTION_STOP;
+
+        mediaSession.setPlaybackState(new PlaybackState.Builder()
+                .setActions(actions)
+                .setState(playing
+                                ? PlaybackState.STATE_PLAYING
+                                : PlaybackState.STATE_PAUSED,
+                        position,
+                        playing ? 1f : 0f,
+                        SystemClock.elapsedRealtime())
+                .build());
     }
 
     private void updateNotification() {
@@ -805,6 +887,12 @@ public class PlaybackService extends Service {
             isForeground = false;
         }
 
+        if (mediaSession != null) {
+            mediaSession.setActive(false);
+            mediaSession.release();
+            mediaSession = null;
+        }
+
         super.onDestroy();
     }
 
@@ -812,5 +900,5 @@ public class PlaybackService extends Service {
     public IBinder onBind(Intent intent) {
         return null;
     }
-                                }
-            
+        }
+        
