@@ -709,7 +709,8 @@ public class PlaybackService extends Service {
         }
 
         builder.setContentTitle(title)
-                .setSmallIcon(android.R.drawable.ic_media_play)
+                .setSmallIcon(R.drawable.ic_stat_suno)
+                .setColor(0xFFE11D2E)
                 .setCategory(Notification.CATEGORY_TRANSPORT)
                 .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .setContentIntent(contentIntent)
@@ -808,4 +809,4 @@ public class PlaybackService extends Service {
         return null;
     }
     }
-        
+    
