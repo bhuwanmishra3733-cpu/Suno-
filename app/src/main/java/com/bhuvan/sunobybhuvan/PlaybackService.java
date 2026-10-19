@@ -623,4 +623,78 @@ public class PlaybackService extends Service {
                         "Stop",
                         serviceIntent(ACTION_STOP, 13))
                 .setStyle(new Notification.MediaStyle()
-              
+              .setShowActionsInCompactView(0, 1, 2));
+
+        return builder.build();
+    }
+
+    private void updateNotification() {
+        if (!isForeground) return;
+
+        NotificationManager manager =
+                (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+
+        if (manager != null) {
+            manager.notify(NOTIFICATION_ID, buildNotification());
+        }
+    }
+
+    private void createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(
+                    CHANNEL_ID,
+                    "Suno Music Playback",
+                    NotificationManager.IMPORTANCE_LOW);
+
+            channel.setDescription("Music playback controls");
+
+            NotificationManager manager =
+                    getSystemService(NotificationManager.class);
+
+            if (manager != null) {
+                manager.createNotificationChannel(channel);
+            }
+        }
+    }
+
+    private void releasePlayer() {
+        handler.removeCallbacks(progressRunnable);
+        prepared = false;
+
+        if (player != null) {
+            try {
+                player.release();
+            } catch (Exception ignored) {
+            }
+
+            player = null;
+        }
+    }
+
+    @Override
+    public void onDestroy() {
+        handler.removeCallbacksAndMessages(null);
+        releasePlayer();
+        abandonAudioFocus();
+
+        if (noisyRegistered) {
+            try {
+                unregisterReceiver(noisyReceiver);
+            } catch (Exception ignored) {
+            }
+            noisyRegistered = false;
+        }
+
+        if (isForeground) {
+            stopForeground(true);
+            isForeground = false;
+        }
+
+        super.onDestroy();
+    }
+
+    @Override
+    public IBinder onBind(Intent intent) {
+        return null;
+    }
+}
