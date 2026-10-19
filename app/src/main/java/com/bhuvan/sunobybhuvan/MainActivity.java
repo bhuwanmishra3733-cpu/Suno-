@@ -456,7 +456,7 @@ public class MainActivity extends Activity {
         return page;
     }
 
-    private View buildNowPlayingPage() {
+        private View buildNowPlayingPage() {
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
 
@@ -513,7 +513,7 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams titleParams =
                 new LinearLayout.LayoutParams(-1, -2);
         titleParams.topMargin = dp(24);
-            box.addView(nowTitle, titleParams);
+        box.addView(nowTitle, titleParams);
 
         nowArtist = label("", 15, secondaryColor, false);
         nowArtist.setGravity(Gravity.CENTER);
@@ -535,6 +535,7 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams seekParams =
                 new LinearLayout.LayoutParams(-1, -2);
         seekParams.topMargin = dp(20);
+        seekBar.setPadding(dp(16), dp(10), dp(16), dp(10));
         box.addView(seekBar, seekParams);
 
         LinearLayout timeRow = new LinearLayout(this);
@@ -547,6 +548,18 @@ public class MainActivity extends Activity {
         timeRow.addView(currentTimeText, new LinearLayout.LayoutParams(0, -2, 1));
         timeRow.addView(totalTimeText, new LinearLayout.LayoutParams(0, -2, 1));
         box.addView(timeRow, new LinearLayout.LayoutParams(-1, -2));
+
+        seekBar.setOnTouchListener((v, event) -> {
+            int a = event.getActionMasked();
+            if (a == android.view.MotionEvent.ACTION_DOWN
+                    || a == android.view.MotionEvent.ACTION_MOVE) {
+                v.getParent().requestDisallowInterceptTouchEvent(true);
+            } else if (a == android.view.MotionEvent.ACTION_UP
+                    || a == android.view.MotionEvent.ACTION_CANCEL) {
+                v.getParent().requestDisallowInterceptTouchEvent(false);
+            }
+            return false;
+        });
 
         seekBar.setOnSeekBarChangeListener(
                 new SeekBar.OnSeekBarChangeListener() {
@@ -897,7 +910,7 @@ public class MainActivity extends Activity {
         foldersContainer.addView(row, params);
     }
 
-    private class SongAdapter extends BaseAdapter {
+                private class SongAdapter extends BaseAdapter {
         @Override
         public int getCount() {
             return PlaybackService.library.size();
@@ -984,7 +997,7 @@ public class MainActivity extends Activity {
                 startForegroundService(intent);
             } else {
                 startService(intent);
-                        }
+            }
         } catch (Exception e) {
             Toast.makeText(this,
                     "Playback could not start. Please try again.",
@@ -1390,7 +1403,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void removeFolder(Uri folder) {
+        private void removeFolder(Uri folder) {
         folders.remove(folder);
 
         try {
@@ -1508,7 +1521,7 @@ public class MainActivity extends Activity {
             final int problems = unreadable;
 
             runOnUiThread(() ->
-                        finishScan(result, problems, generation, showResult));
+                    finishScan(result, problems, generation, showResult));
         }).start();
     }
 
@@ -1812,4 +1825,4 @@ public class MainActivity extends Activity {
         }
     }
     }
-            
+                                 
