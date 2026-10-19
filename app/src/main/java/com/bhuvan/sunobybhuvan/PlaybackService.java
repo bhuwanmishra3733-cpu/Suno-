@@ -9,6 +9,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
@@ -20,8 +21,10 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.os.SystemClock;
 
 import java.util.ArrayList;
+import java.util.Random;
 
 public class PlaybackService extends Service {
 
@@ -34,6 +37,7 @@ public class PlaybackService extends Service {
     public static final String ACTION_REFRESH = "com.bhuvan.sunobybhuvan.REFRESH";
     public static final String ACTION_PROGRESS = "com.bhuvan.sunobybhuvan.PROGRESS";
     public static final String ACTION_ERROR = "com.bhuvan.sunobybhuvan.ERROR";
+    public static final String ACTION_SLEEP = "com.bhuvan.sunobybhuvan.SLEEP";
 
     public static final String EXTRA_INDEX = "index";
     public static final String EXTRA_POSITION = "position";
@@ -42,6 +46,7 @@ public class PlaybackService extends Service {
     public static final String EXTRA_PREPARED = "prepared";
     public static final String EXTRA_SEEK_POSITION = "seek_position";
     public static final String EXTRA_MESSAGE = "message";
+    public static final String EXTRA_MINUTES = "minutes";
 
     public static class Song {
         public final Uri uri;
@@ -72,6 +77,37 @@ public class PlaybackService extends Service {
     public static final ArrayList<Song> library = new ArrayList<>();
     public static Song currentSong = null;
 
+    // Play modes (shared with MainActivity, main thread only).
+    public static final int LOOP_OFF = 0;
+    public static final int LOOP_ALL = 1;
+    public static final int LOOP_ONE = 2;
+
+    public static boolean shuffleOn = false;
+    public static int loopMode = LOOP_OFF;
+
+    // Sleep timer end time, in SystemClock.elapsedRealtime() terms. 0 = off.
+    public static long sleepEndAt = 0;
+
+    private static final String SETTINGS_PREFS = "SunoSettings";
+    private static final String SHUFFLE_KEY = "shuffle";
+    private static final String LOOP_KEY = "loop_mode";
+
+    public static void loadSettings(Context context) {
+        SharedPreferences prefs =
+                context.getSharedPreferences(SETTINGS_PREFS, Context.MODE_PRIVATE);
+        shuffleOn = prefs.getBoolean(SHUFFLE_KEY, false);
+        loopMode = prefs.getInt(LOOP_KEY, LOOP_OFF);
+        if (loopMode < LOOP_OFF || loopMode > LOOP_ONE) loopMode = LOOP_OFF;
+    }
+
+    public static void saveSettings(Context context) {
+        context.getSharedPreferences(SETTINGS_PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(SHUFFLE_KEY, shuffleOn)
+                .putInt(LOOP_KEY, loopMode)
+                .apply();
+    }
+
     private static final String CHANNEL_ID = "suno_playback";
     private static final int NOTIFICATION_ID = 1001;
 
@@ -82,6 +118,9 @@ public class PlaybackService extends Service {
     private boolean noisyRegistered = false;
     private int errorStreak = 0;
 
+    private final ArrayList<Song> history = new ArrayList<>();
+    private final Random random = new Random();
+
     private AudioManager audioManager;
     private AudioFocusRequest focusRequest;
 
@@ -90,10 +129,21 @@ public class PlaybackService extends Service {
     private final Runnable progressRunnable = new Runnable() {
         @Override
         public void run() {
+            if (sleepEndAt > 0 && SystemClock.elapsedRealtime() >= sleepEndAt) {
+                onSleepTimerFired();
+                return;
+            }
             sendProgress();
             if (isPlayerPlaying()) {
                 handler.postDelayed(this, 500);
             }
+        }
+    };
+
+    private final Runnable sleepRunnable = new Runnable() {
+        @Override
+        public void run() {
+            onSleepTimerFired();
         }
     };
 
@@ -115,6 +165,7 @@ public class PlaybackService extends Service {
     public void onCreate() {
         super.onCreate();
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
+        loadSettings(this);
         createNotificationChannel();
 
         IntentFilter filter =
@@ -148,6 +199,9 @@ public class PlaybackService extends Service {
                     break;
                 case ACTION_SEEK:
                     seekToPosition(intent.getIntExtra(EXTRA_SEEK_POSITION, 0));
+                    break;
+                case ACTION_SLEEP:
+                    setSleepTimer(intent.getIntExtra(EXTRA_MINUTES, 0));
                     break;
                 case ACTION_REFRESH:
                     if (player == null) {
@@ -266,8 +320,28 @@ public class PlaybackService extends Service {
 
         handler.removeCallbacks(progressRunnable);
 
-        if (library.size() > 1) {
+        // Loop this song: play it again.
+        if (loopMode == LOOP_ONE && currentSong != null) {
+            startSong(currentSong);
+            return;
+        }
+
+        int size = library.size();
+        int index = currentSong == null ? -1 : library.indexOf(currentSong);
+        boolean lastSong = size <= 1 || index == size - 1;
+
+        // Loop off: after the last song, stop at the start of that song.
+        if (loopMode == LOOP_OFF && !shuffleOn && lastSong) {
+            seekToPosition(0);
+            sendProgress();
+            updateNotification();
+            return;
+        }
+
+        if (size > 1) {
             playRelative(1);
+        } else if (currentSong != null) {
+            startSong(currentSong);
         } else {
             sendProgress();
             updateNotification();
@@ -367,7 +441,29 @@ public class PlaybackService extends Service {
         int index = currentSong == null ? -1 : library.indexOf(currentSong);
         int target;
 
-        if (index < 0) {
+        if (shuffleOn && size > 1) {
+            if (delta > 0) {
+                if (currentSong != null) {
+                    history.add(currentSong);
+                    if (history.size() > 100) {
+                        history.remove(0);
+                    }
+                }
+                do {
+                    target = random.nextInt(size);
+                } while (target == index);
+            } else {
+                target = -1;
+                while (target < 0 && !history.isEmpty()) {
+                    Song earlier = history.remove(history.size() - 1);
+                    target = library.indexOf(earlier);
+                }
+                if (target < 0) {
+                    target = index < 0
+                            ? size - 1 : ((index - 1) % size + size) % size;
+                }
+            }
+        } else if (index < 0) {
             target = delta > 0 ? 0 : size - 1;
         } else {
             target = ((index + delta) % size + size) % size;
@@ -394,8 +490,28 @@ public class PlaybackService extends Service {
         }
     }
 
+    private void setSleepTimer(int minutes) {
+        handler.removeCallbacks(sleepRunnable);
+
+        if (minutes <= 0) {
+            sleepEndAt = 0;
+            return;
+        }
+
+        long delay = minutes * 60000L;
+        sleepEndAt = SystemClock.elapsedRealtime() + delay;
+        handler.postDelayed(sleepRunnable, delay);
+    }
+
+    private void onSleepTimerFired() {
+        sleepEndAt = 0;
+        stopEverything();
+    }
+
     private void stopEverything() {
         handler.removeCallbacks(progressRunnable);
+        handler.removeCallbacks(sleepRunnable);
+        sleepEndAt = 0;
         releasePlayer();
         abandonAudioFocus();
         currentSong = null;
@@ -510,191 +626,4 @@ public class PlaybackService extends Service {
                                         .setContentType(
                                                 AudioAttributes.CONTENT_TYPE_MUSIC)
                                         .build())
-                        .setOnAudioFocusChangeListener(focusListener)
-                        .build();
-            }
-            result = audioManager.requestAudioFocus(focusRequest);
-        } else {
-            result = audioManager.requestAudioFocus(
-                    focusListener,
-                    AudioManager.STREAM_MUSIC,
-                    AudioManager.AUDIOFOCUS_GAIN);
-        }
-
-        return result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
-    }
-
-    private void abandonAudioFocus() {
-        if (audioManager == null) return;
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            if (focusRequest != null) {
-                audioManager.abandonAudioFocusRequest(focusRequest);
-            }
-        } else {
-            audioManager.abandonAudioFocus(focusListener);
-        }
-    }
-
-    private void ensureForeground() {
-        try {
-            Notification notification = buildNotification();
-
-            if (Build.VERSION.SDK_INT >= 29) {
-                startForeground(
-                        NOTIFICATION_ID,
-                        notification,
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
-            } else {
-                startForeground(NOTIFICATION_ID, notification);
-            }
-
-            isForeground = true;
-        } catch (RuntimeException e) {
-            isForeground = false;
-        }
-    }
-
-    private PendingIntent serviceIntent(String action, int requestCode) {
-        Intent intent = new Intent(this, PlaybackService.class);
-        intent.setAction(action);
-
-        return PendingIntent.getService(
-                this,
-                requestCode,
-                intent,
-                PendingIntent.FLAG_UPDATE_CURRENT
-                        | PendingIntent.FLAG_IMMUTABLE);
-    }
-
-    private Notification buildNotification() {
-        boolean playing = isPlayerPlaying();
-
-        String title = currentSong != null
-                ? currentSong.title : "Suno by Bhuvan";
-
-        String text;
-        if (currentSong != null && currentSong.artist != null
-                && !currentSong.artist.trim().isEmpty()) {
-            text = currentSong.artist;
-        } else {
-            text = playing ? "Playing" : "Suno by Bhuvan";
-        }
-
-        Intent open = new Intent(this, MainActivity.class);
-        open.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP
-                | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-
-        PendingIntent contentIntent = PendingIntent.getActivity(
-                this,
-                0,
-                open,
-                PendingIntent.FLAG_UPDATE_CURRENT
-                        | PendingIntent.FLAG_IMMUTABLE);
-
-        Notification.Builder builder;
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            builder = new Notification.Builder(this, CHANNEL_ID);
-        } else {
-            builder = new Notification.Builder(this);
-        }
-
-        builder.setContentTitle(title)
-                .setContentText(text)
-                .setSmallIcon(android.R.drawable.ic_media_play)
-                .setContentIntent(contentIntent)
-                .setOngoing(true)
-                .setOnlyAlertOnce(true)
-                .setShowWhen(false)
-                .addAction(android.R.drawable.ic_media_previous,
-                        "Previous",
-                        serviceIntent(ACTION_PREVIOUS, 10))
-                .addAction(
-                        playing
-                                ? android.R.drawable.ic_media_pause
-                                : android.R.drawable.ic_media_play,
-                        playing ? "Pause" : "Play",
-                        serviceIntent(playing ? ACTION_PAUSE : ACTION_PLAY, 11))
-                .addAction(android.R.drawable.ic_media_next,
-                        "Next",
-                        serviceIntent(ACTION_NEXT, 12))
-                .addAction(android.R.drawable.ic_menu_close_clear_cancel,
-                        "Stop",
-                        serviceIntent(ACTION_STOP, 13))
-                .setStyle(new Notification.MediaStyle()
-              .setShowActionsInCompactView(0, 1, 2));
-
-        return builder.build();
-    }
-
-    private void updateNotification() {
-        if (!isForeground) return;
-
-        NotificationManager manager =
-                (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-
-        if (manager != null) {
-            manager.notify(NOTIFICATION_ID, buildNotification());
-        }
-    }
-
-    private void createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel channel = new NotificationChannel(
-                    CHANNEL_ID,
-                    "Suno Music Playback",
-                    NotificationManager.IMPORTANCE_LOW);
-
-            channel.setDescription("Music playback controls");
-
-            NotificationManager manager =
-                    getSystemService(NotificationManager.class);
-
-            if (manager != null) {
-                manager.createNotificationChannel(channel);
-            }
-        }
-    }
-
-    private void releasePlayer() {
-        handler.removeCallbacks(progressRunnable);
-        prepared = false;
-
-        if (player != null) {
-            try {
-                player.release();
-            } catch (Exception ignored) {
-            }
-
-            player = null;
-        }
-    }
-
-    @Override
-    public void onDestroy() {
-        handler.removeCallbacksAndMessages(null);
-        releasePlayer();
-        abandonAudioFocus();
-
-        if (noisyRegistered) {
-            try {
-                unregisterReceiver(noisyReceiver);
-            } catch (Exception ignored) {
-            }
-            noisyRegistered = false;
-        }
-
-        if (isForeground) {
-            stopForeground(true);
-            isForeground = false;
-        }
-
-        super.onDestroy();
-    }
-
-    @Override
-    public IBinder onBind(Intent intent) {
-        return null;
-    }
-}
+                       
