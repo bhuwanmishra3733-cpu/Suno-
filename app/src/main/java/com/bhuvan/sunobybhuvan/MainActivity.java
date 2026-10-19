@@ -1,34 +1,45 @@
 package com.bhuvan.sunobybhuvan;
 
+import android.Manifest;
 import android.app.Activity;
+import android.content.ActivityNotFoundException;
 import android.content.BroadcastReceiver;
+import android.content.ClipData;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
-import android.content.ClipData;
+import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
 import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
+import android.widget.BaseAdapter;
 import android.widget.Button;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.ListView;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.bhuvan.sunobybhuvan.PlaybackService.Song;
+
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Locale;
 import java.util.Set;
@@ -37,163 +48,234 @@ public class MainActivity extends Activity {
 
     private static final int PICK_AUDIO = 101;
     private static final int PICK_FOLDER = 102;
+    private static final int REQUEST_NOTIFICATIONS = 201;
 
     private static final String PREFS = "SunoSettings";
     private static final String THEME_KEY = "theme";
     private static final String FOLDERS_KEY = "folders";
+    private static final String SONGS_KEY = "single_songs";
+    private static final String ASKED_NOTIFICATIONS_KEY = "asked_notifications";
+
+    private static final String[] THEME_NAMES = {
+            "Midnight Black", "Royal Purple", "Ocean Blue",
+            "Rose Pink", "Emerald Green"
+    };
+
+    private static final int[] THEME_BACKGROUND = {
+            Color.rgb(12, 13, 19), Color.rgb(24, 14, 39),
+            Color.rgb(8, 22, 38), Color.rgb(40, 17, 29),
+            Color.rgb(10, 32, 26)
+    };
+
+    private static final int[] THEME_PANEL = {
+            Color.rgb(34, 35, 46), Color.rgb(55, 37, 78),
+            Color.rgb(23, 48, 72), Color.rgb(72, 35, 53),
+            Color.rgb(24, 59, 47)
+    };
+
+    private static final int[] THEME_ACCENT = {
+            Color.rgb(153, 117, 255), Color.rgb(181, 117, 255),
+            Color.rgb(45, 190, 255), Color.rgb(255, 105, 155),
+            Color.rgb(56, 220, 145)
+    };
+
+    private static final int[] THEME_SECONDARY = {
+            Color.LTGRAY, Color.rgb(211, 194, 230),
+            Color.rgb(185, 216, 238), Color.rgb(240, 195, 215),
+            Color.rgb(180, 225, 205)
+    };
 
     private int theme = 0;
     private int backgroundColor;
     private int panelColor;
     private int accentColor;
-    private int textColor;
     private int secondaryColor;
+    private final int textColor = Color.WHITE;
 
-    private LinearLayout root;
-    private TextView songName;
-    private TextView status;
-    private TextView currentTime;
-    private TextView totalTime;
-    private TextView themeLabel;
-    private SeekBar seekBar;
-
-    private final ArrayList<Uri> songs = new ArrayList<>();
-    private final ArrayList<String> songNames = new ArrayList<>();
     private final ArrayList<Uri> folders = new ArrayList<>();
+    private final ArrayList<Uri> singleSongs = new ArrayList<>();
 
-    private int songIndex = -1;
-    private int loadedIndex = -1;
+    private volatile boolean scanning = false;
+    private volatile int scanGeneration = 0;
+    private boolean rescanPending = false;
+
+    private int currentIndex = -1;
+    private int position = 0;
+    private int duration = 0;
+    private boolean playing = false;
+    private boolean prepared = false;
     private boolean seeking = false;
     private boolean receiverRegistered = false;
+    private int currentPage = 0;
 
-    private int duration = 0;
-    private int position = 0;
-    private boolean playing = false;
+    private LinearLayout root;
+    private final View[] pages = new View[3];
+    private final Button[] tabButtons = new Button[3];
+    private ListView listView;
+    private SongAdapter adapter;
+    private TextView libraryHeader;
+    private TextView emptyText;
+    private TextView miniTitle;
+    private TextView nowTitle;
+    private TextView nowArtist;
+    private TextView nowStatus;
+    private TextView currentTimeText;
+    private TextView totalTimeText;
+    private Button miniPlayButton;
+    private Button nowPlayButton;
+    private LinearLayout miniBar;
+    private LinearLayout foldersContainer;
+    private SeekBar seekBar;
 
-    private final Handler handler =
-            new Handler(Looper.getMainLooper());
+    private static class MetaResult {
+        final Song song;
+        final String title;
+        final String artist;
+        final long durationMs;
 
-    private final BroadcastReceiver progressReceiver =
-            new BroadcastReceiver() {
+        MetaResult(Song song, String title, String artist, long durationMs) {
+            this.song = song;
+            this.title = title;
+            this.artist = artist;
+            this.durationMs = durationMs;
+        }
+    }
+
+    private final BroadcastReceiver receiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            if (intent == null) return;
+            if (intent == null || intent.getAction() == null) return;
 
-            position = intent.getIntExtra(
-                    PlaybackService.EXTRA_POSITION, 0);
-
-            duration = intent.getIntExtra(
-                    PlaybackService.EXTRA_DURATION, 0);
-
-            playing = intent.getBooleanExtra(
-                    PlaybackService.EXTRA_PLAYING, false);
-
-            boolean prepared = intent.getBooleanExtra(
-                    PlaybackService.EXTRA_PREPARED, false);
-
-            if (prepared) {
-                if (!seeking) {
-                    seekBar.setMax(Math.max(duration, 1));
-                    seekBar.setProgress(
-                            Math.min(position, Math.max(duration, 1)));
+            if (PlaybackService.ACTION_ERROR.equals(intent.getAction())) {
+                String message =
+                        intent.getStringExtra(PlaybackService.EXTRA_MESSAGE);
+                if (message != null) {
+                    Toast.makeText(MainActivity.this, message,
+                            Toast.LENGTH_LONG).show();
                 }
-
-                currentTime.setText(formatTime(position));
-                totalTime.setText(formatTime(duration));
-
-                status.setText(
-                        playing ? "♫ Now playing" : "Ⅱ Paused");
+                return;
             }
+
+            if (!PlaybackService.ACTION_PROGRESS.equals(intent.getAction())) {
+                return;
+            }
+
+            position = intent.getIntExtra(PlaybackService.EXTRA_POSITION, 0);
+            duration = intent.getIntExtra(PlaybackService.EXTRA_DURATION, 0);
+            playing = intent.getBooleanExtra(PlaybackService.EXTRA_PLAYING, false);
+            prepared = intent.getBooleanExtra(PlaybackService.EXTRA_PREPARED, false);
+
+            int index = intent.getIntExtra(PlaybackService.EXTRA_INDEX, -1);
+            boolean changed = index != currentIndex;
+            currentIndex = index;
+
+            if (changed && adapter != null) {
+                adapter.notifyDataSetChanged();
+            }
+
+            updatePlayerUi();
         }
     };
 
-    private int dp(int value) {
-        return (int) (value *
-                getResources().getDisplayMetrics().density + 0.5f);
-    }
+    // ---------------------------------------------------------------- lifecycle
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        theme = getSharedPreferences(PREFS, MODE_PRIVATE)
-                .getInt(THEME_KEY, 0);
-
+        theme = getSharedPreferences(PREFS, MODE_PRIVATE).getInt(THEME_KEY, 0);
+        if (theme < 0 || theme >= THEME_NAMES.length) theme = 0;
         applyTheme();
-        createScreen();
-        registerProgressReceiver();
-        loadSavedFolders();
-        scanSavedFolders();
+
+        loadUris(FOLDERS_KEY, folders);
+        loadUris(SONGS_KEY, singleSongs);
+
+        buildUi();
+        registerReceivers();
+        syncCurrentIndex();
+        refreshAllUi();
+
+        if (PlaybackService.library.isEmpty()
+                && (!folders.isEmpty() || !singleSongs.isEmpty())) {
+            rescanLibrary(false);
+        }
+
+        askNotificationPermission();
     }
 
-    private void registerProgressReceiver() {
-        IntentFilter filter =
-                new IntentFilter(PlaybackService.ACTION_PROGRESS);
+    @Override
+    protected void onResume() {
+        super.onResume();
+
+        syncCurrentIndex();
+
+        if (PlaybackService.currentSong != null) {
+            sendCommand(PlaybackService.ACTION_REFRESH);
+        } else {
+            playing = false;
+            prepared = false;
+            position = 0;
+            duration = 0;
+            updatePlayerUi();
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        scanGeneration++;
+
+        if (receiverRegistered) {
+            try {
+                unregisterReceiver(receiver);
+            } catch (Exception ignored) {
+            }
+            receiverRegistered = false;
+        }
+
+        super.onDestroy();
+    }
+
+    private void registerReceivers() {
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(PlaybackService.ACTION_PROGRESS);
+        filter.addAction(PlaybackService.ACTION_ERROR);
 
         if (Build.VERSION.SDK_INT >= 33) {
-            registerReceiver(
-                    progressReceiver,
-                    filter,
-                    Context.RECEIVER_NOT_EXPORTED);
+            registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED);
         } else {
-            registerReceiver(progressReceiver, filter);
+            registerReceiver(receiver, filter);
         }
 
         receiverRegistered = true;
     }
 
+    // ------------------------------------------------------------------ theme
+
     private void applyTheme() {
-        switch (theme) {
-            case 1:
-                backgroundColor = Color.rgb(24, 14, 39);
-                panelColor = Color.rgb(55, 37, 78);
-                accentColor = Color.rgb(181, 117, 255);
-                textColor = Color.WHITE;
-                secondaryColor = Color.rgb(211, 194, 230);
-                break;
-
-            case 2:
-                backgroundColor = Color.rgb(8, 22, 38);
-                panelColor = Color.rgb(23, 48, 72);
-                accentColor = Color.rgb(45, 190, 255);
-                textColor = Color.WHITE;
-                secondaryColor = Color.rgb(185, 216, 238);
-                break;
-
-            case 3:
-                backgroundColor = Color.rgb(40, 17, 29);
-                panelColor = Color.rgb(72, 35, 53);
-                accentColor = Color.rgb(255, 105, 155);
-                textColor = Color.WHITE;
-                secondaryColor = Color.rgb(240, 195, 215);
-                break;
-
-            case 4:
-                backgroundColor = Color.rgb(10, 32, 26);
-                panelColor = Color.rgb(24, 59, 47);
-                accentColor = Color.rgb(56, 220, 145);
-                textColor = Color.WHITE;
-                secondaryColor = Color.rgb(180, 225, 205);
-                break;
-
-            default:
-                backgroundColor = Color.rgb(12, 13, 19);
-                panelColor = Color.rgb(34, 35, 46);
-                accentColor = Color.rgb(153, 117, 255);
-                textColor = Color.WHITE;
-                secondaryColor = Color.LTGRAY;
-                break;
-        }
+        backgroundColor = THEME_BACKGROUND[theme];
+        panelColor = THEME_PANEL[theme];
+        accentColor = THEME_ACCENT[theme];
+        secondaryColor = THEME_SECONDARY[theme];
     }
 
-    private String getThemeName() {
-        switch (theme) {
-            case 1: return "Royal Purple";
-            case 2: return "Ocean Blue";
-            case 3: return "Rose Pink";
-            case 4: return "Emerald Green";
-            default: return "Midnight Black";
-        }
+    private void selectTheme(int index) {
+        theme = index;
+
+        getSharedPreferences(PREFS, MODE_PRIVATE)
+                .edit()
+                .putInt(THEME_KEY, theme)
+                .apply();
+
+        applyTheme();
+        buildUi();
+        refreshAllUi();
+    }
+
+    // --------------------------------------------------------------- helpers
+
+    private int dp(int value) {
+        return (int) (value
+                * getResources().getDisplayMetrics().density + 0.5f);
     }
 
     private GradientDrawable rounded(int color, int radius) {
@@ -203,200 +285,13 @@ public class MainActivity extends Activity {
         return drawable;
     }
 
-    private void createScreen() {
-        ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
-        scroll.setBackgroundColor(backgroundColor);
-
-        root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(22), dp(25), dp(22), dp(25));
-        root.setBackgroundColor(backgroundColor);
-
-        TextView brand = new TextView(this);
-        brand.setText("♫  SUNO BY BHUVAN");
-        brand.setTextColor(accentColor);
-        brand.setTextSize(15);
-        brand.setTypeface(null, Typeface.BOLD);
-        root.addView(brand);
-
-        TextView title = new TextView(this);
-        title.setText("Your music.");
-        title.setTextSize(32);
-        title.setTextColor(textColor);
-        title.setTypeface(null, Typeface.BOLD);
-
-        LinearLayout.LayoutParams titleParams =
-                new LinearLayout.LayoutParams(-1, -2);
-        titleParams.topMargin = dp(10);
-        root.addView(title, titleParams);
-
-        TextView subtitle = new TextView(this);
-        subtitle.setText("Your vibe. Your rules.");
-        subtitle.setTextSize(15);
-        subtitle.setTextColor(secondaryColor);
-        root.addView(subtitle);
-
-        TextView icon = new TextView(this);
-        icon.setText("♫");
-        icon.setTextSize(76);
-        icon.setGravity(Gravity.CENTER);
-        icon.setTextColor(Color.WHITE);
-        icon.setBackground(rounded(accentColor, 25));
-
-        LinearLayout.LayoutParams iconParams =
-                new LinearLayout.LayoutParams(-1, dp(145));
-        iconParams.topMargin = dp(22);
-        root.addView(icon, iconParams);
-
-        songName = new TextView(this);
-        songName.setText("No song selected");
-        songName.setTextSize(19);
-        songName.setTextColor(textColor);
-        songName.setTypeface(null, Typeface.BOLD);
-
-        LinearLayout.LayoutParams nameParams =
-                new LinearLayout.LayoutParams(-1, -2);
-        nameParams.topMargin = dp(20);
-        root.addView(songName, nameParams);
-
-        status = new TextView(this);
-        status.setText("Choose music from your phone.");
-        status.setTextSize(14);
-        status.setTextColor(secondaryColor);
-
-        LinearLayout.LayoutParams statusParams =
-                new LinearLayout.LayoutParams(-1, -2);
-        statusParams.topMargin = dp(6);
-        root.addView(status, statusParams);
-
-        seekBar = new SeekBar(this);
-        seekBar.setMax(1);
-        seekBar.setProgressTintList(
-                ColorStateList.valueOf(accentColor));
-        seekBar.setThumbTintList(
-                ColorStateList.valueOf(accentColor));
-
-        LinearLayout.LayoutParams seekParams =
-                new LinearLayout.LayoutParams(-1, -2);
-        seekParams.topMargin = dp(15);
-        root.addView(seekBar, seekParams);
-
-        LinearLayout timeRow = new LinearLayout(this);
-        timeRow.setOrientation(LinearLayout.HORIZONTAL);
-
-        currentTime = new TextView(this);
-        currentTime.setText("00:00");
-        currentTime.setTextColor(secondaryColor);
-
-        totalTime = new TextView(this);
-        totalTime.setText("00:00");
-        totalTime.setTextColor(secondaryColor);
-        totalTime.setGravity(Gravity.END);
-
-        timeRow.addView(currentTime,
-                new LinearLayout.LayoutParams(0, -2, 1));
-        timeRow.addView(totalTime,
-                new LinearLayout.LayoutParams(0, -2, 1));
-
-        root.addView(timeRow);
-
-        seekBar.setOnSeekBarChangeListener(
-                new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(
-                    SeekBar bar, int progress, boolean fromUser) {
-                if (fromUser) {
-                    currentTime.setText(formatTime(progress));
-                }
-            }
-
-            @Override
-            public void onStartTrackingTouch(SeekBar bar) {
-                seeking = true;
-            }
-
-            @Override
-            public void onStopTrackingTouch(SeekBar bar) {
-                Intent intent = new Intent(
-                        MainActivity.this, PlaybackService.class);
-                intent.setAction(PlaybackService.ACTION_SEEK);
-                intent.putExtra(
-                        PlaybackService.EXTRA_SEEK_POSITION,
-                        bar.getProgress());
-                startService(intent);
-                seeking = false;
-            }
-        });
-
-        addButton("＋  Choose Songs", panelColor,
-                v -> chooseAudio(), 20);
-
-        addButton("📁  Add Music Folder", panelColor,
-                v -> chooseFolder(), 10);
-
-        addButton("▶  Play", accentColor,
-                v -> playSong(), 10);
-
-        addButton("Ⅱ  Pause", panelColor,
-                v -> pauseSong(), 10);
-
-        LinearLayout navigation = new LinearLayout(this);
-        navigation.setOrientation(LinearLayout.HORIZONTAL);
-
-        Button previous = makeButton("⏮ Previous", panelColor);
-        Button next = makeButton("Next ⏭", panelColor);
-
-        LinearLayout.LayoutParams navParams =
-                new LinearLayout.LayoutParams(0, dp(52), 1);
-        navParams.setMargins(dp(4), dp(10), dp(4), 0);
-
-        navigation.addView(previous, navParams);
-        navigation.addView(next, navParams);
-        root.addView(navigation);
-
-        previous.setOnClickListener(v -> previousSong());
-        next.setOnClickListener(v -> nextSong());
-
-        addButton("🎨  Change Theme", panelColor,
-                v -> changeTheme(), 18);
-
-        themeLabel = new TextView(this);
-        themeLabel.setText("Theme: " + getThemeName());
-        themeLabel.setTextColor(secondaryColor);
-        themeLabel.setGravity(Gravity.CENTER);
-        themeLabel.setTextSize(12);
-
-        LinearLayout.LayoutParams themeParams =
-                new LinearLayout.LayoutParams(-1, -2);
-        themeParams.topMargin = dp(10);
-        root.addView(themeLabel, themeParams);
-
-        TextView footer = new TextView(this);
-        footer.setText("SUNO • YOUR PERSONAL MUSIC SPACE");
-        footer.setTextColor(secondaryColor);
-        footer.setGravity(Gravity.CENTER);
-        footer.setTextSize(11);
-
-        LinearLayout.LayoutParams footerParams =
-                new LinearLayout.LayoutParams(-1, -2);
-        footerParams.topMargin = dp(20);
-        root.addView(footer, footerParams);
-
-        scroll.addView(root);
-        setContentView(scroll);
-    }
-
-    private void addButton(
-            String text, int color,
-            View.OnClickListener listener, int margin) {
-        Button button = makeButton(text, color);
-        button.setOnClickListener(listener);
-
-        LinearLayout.LayoutParams params =
-                new LinearLayout.LayoutParams(-1, dp(52));
-        params.topMargin = dp(margin);
-        root.addView(button, params);
+    private TextView label(String text, int size, int color, boolean bold) {
+        TextView view = new TextView(this);
+        view.setText(text);
+        view.setTextSize(size);
+        view.setTextColor(color);
+        if (bold) view.setTypeface(null, Typeface.BOLD);
+        return view;
     }
 
     private Button makeButton(String text, int color) {
@@ -406,372 +301,266 @@ public class MainActivity extends Activity {
         button.setTextSize(14);
         button.setTextColor(Color.WHITE);
         button.setBackground(rounded(color, 16));
+        button.setMinWidth(0);
+        button.setMinimumWidth(0);
+        button.setPadding(dp(8), 0, dp(8), 0);
         return button;
     }
 
-    private void chooseAudio() {
-        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("audio/*");
-        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
-        startActivityForResult(intent, PICK_AUDIO);
+    private void addButton(LinearLayout parent, String text, int color,
+                           View.OnClickListener listener, int topMarginDp) {
+        Button button = makeButton(text, color);
+        button.setOnClickListener(listener);
+
+        LinearLayout.LayoutParams params =
+                new LinearLayout.LayoutParams(-1, dp(52));
+        params.topMargin = dp(topMarginDp);
+        parent.addView(button, params);
     }
 
-    private void chooseFolder() {
-        Intent intent = new Intent(
-                Intent.ACTION_OPEN_DOCUMENT_TREE);
-
-        intent.addFlags(
-                Intent.FLAG_GRANT_READ_URI_PERMISSION
-                | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-
-        startActivityForResult(intent, PICK_FOLDER);
+    private String formatTime(long milliseconds) {
+        long totalSeconds = Math.max(0, milliseconds) / 1000;
+        return String.format(Locale.getDefault(), "%02d:%02d",
+                totalSeconds / 60, totalSeconds % 60);
     }
 
-    @Override
-    protected void onActivityResult(
-            int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-
-        if (resultCode != RESULT_OK || data == null) return;
-
-        if (requestCode == PICK_AUDIO) {
-            if (data.getClipData() != null) {
-                ClipData clip = data.getClipData();
-
-                for (int i = 0; i < clip.getItemCount(); i++) {
-                    addSong(clip.getItemAt(i).getUri(), null);
-                }
-            } else if (data.getData() != null) {
-                addSong(data.getData(), null);
-            }
-
-            updateSongDisplay();
-
-        } else if (requestCode == PICK_FOLDER) {
-            Uri folder = data.getData();
-            if (folder == null) return;
-
-            try {
-                getContentResolver().takePersistableUriPermission(
-                        folder, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            } catch (Exception ignored) {
-            }
-
-            if (!folders.contains(folder)) {
-                folders.add(folder);
-                saveFolders();
-            }
-
-            int before = songs.size();
-            scanFolder(folder);
-
-            updateSongDisplay();
-
-            Toast.makeText(this,
-                    "Folder added • " + (songs.size() - before)
-                            + " new songs",
-                    Toast.LENGTH_LONG).show();
+    private Song songAt(int index) {
+        if (index >= 0 && index < PlaybackService.library.size()) {
+            return PlaybackService.library.get(index);
         }
+        return null;
     }
 
-    private void addSong(Uri uri, String suppliedName) {
-        if (uri == null || songs.contains(uri)) return;
+    private String displayArtist(Song song) {
+        if (song.artist == null || song.artist.trim().isEmpty()) {
+            return "Unknown artist";
+        }
+        return song.artist;
+    }
 
-        try {
-            getContentResolver().takePersistableUriPermission(
-                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        } catch (Exception ignored) {
+    private void syncCurrentIndex() {
+        Song current = PlaybackService.currentSong;
+        currentIndex = current == null
+                ? -1 : PlaybackService.library.indexOf(current);
+    }
+
+    // --------------------------------------------------------------------- UI
+
+    private void buildUi() {
+        root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(backgroundColor);
+        root.setFitsSystemWindows(true);
+
+        TextView brand = label("♫  SUNO BY BHUVAN", 15, accentColor, true);
+        brand.setPadding(dp(20), dp(14), dp(20), dp(8));
+        root.addView(brand, new LinearLayout.LayoutParams(-1, -2));
+
+        FrameLayout content = new FrameLayout(this);
+        pages[0] = buildLibraryPage();
+        pages[1] = buildNowPlayingPage();
+        pages[2] = buildFoldersPage();
+
+        for (View page : pages) {
+            content.addView(page, new FrameLayout.LayoutParams(-1, -1));
         }
 
-        String name = suppliedName;
-        if (name == null || name.trim().isEmpty()) {
-            name = getAudioName(uri);
-        }
+        root.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
 
-        songs.add(uri);
-        songNames.add(name);
+        miniBar = buildMiniBar();
+        LinearLayout.LayoutParams miniParams =
+                new LinearLayout.LayoutParams(-1, -2);
+        miniParams.setMargins(dp(12), dp(4), dp(12), dp(6));
+        root.addView(miniBar, miniParams);
 
-        if (songIndex < 0) songIndex = 0;
+        LinearLayout.LayoutParams tabParams =
+                new LinearLayout.LayoutParams(-1, -2);
+        tabParams.setMargins(dp(12), 0, dp(12), dp(10));
+        root.addView(buildTabBar(), tabParams);
+
+        setContentView(root);
+        showPage(currentPage);
     }
 
-    private String getAudioName(Uri uri) {
-        try (Cursor cursor = getContentResolver().query(
-                uri, null, null, null, null)) {
-            if (cursor != null && cursor.moveToFirst()) {
-                int index = cursor.getColumnIndex(
-                        OpenableColumns.DISPLAY_NAME);
-                if (index >= 0) {
-                    String name = cursor.getString(index);
-                    if (name != null) return name;
-                }
-            }
-        } catch (Exception ignored) {
-        }
+    private View buildLibraryPage() {
+        LinearLayout page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.VERTICAL);
 
-        return "Audio file";
+        libraryHeader = label("", 13, secondaryColor, true);
+        libraryHeader.setPadding(dp(20), dp(4), dp(20), dp(8));
+        page.addView(libraryHeader, new LinearLayout.LayoutParams(-1, -2));
+
+        emptyText = label(
+                "Your library is empty.\n\nOpen the Folders tab and add a music folder, "
+                        + "or choose some songs.",
+                14, secondaryColor, false);
+        emptyText.setGravity(Gravity.CENTER);
+        emptyText.setPadding(dp(30), dp(30), dp(30), dp(30));
+        page.addView(emptyText, new LinearLayout.LayoutParams(-1, -2));
+
+        listView = new ListView(this);
+        listView.setDivider(null);
+        listView.setDividerHeight(0);
+        listView.setFastScrollEnabled(true);
+        listView.setPadding(dp(8), 0, dp(8), 0);
+        listView.setClipToPadding(false);
+
+        adapter = new SongAdapter();
+        listView.setAdapter(adapter);
+        listView.setOnItemClickListener(
+                (parent, view, itemPosition, id) -> sendPlay(itemPosition));
+
+        page.addView(listView, new LinearLayout.LayoutParams(-1, 0, 1));
+        return page;
     }
 
-    private void scanFolder(Uri treeUri) {
-        try {
-            String documentId =
-                    DocumentsContract.getTreeDocumentId(treeUri);
-            scanDocument(treeUri, documentId);
-        } catch (Exception e) {
-            Toast.makeText(this,
-                    "Could not read this folder",
-                    Toast.LENGTH_SHORT).show();
-        }
+    private View buildNowPlayingPage() {
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(24), dp(10), dp(24), dp(20));
+        box.setGravity(Gravity.CENTER_HORIZONTAL);
+
+        TextView art = label("♫", 80, Color.WHITE, false);
+        art.setGravity(Gravity.CENTER);
+        art.setBackground(rounded(accentColor, 28));
+        box.addView(art, new LinearLayout.LayoutParams(-1, dp(190)));
+
+        nowTitle = label("No song selected", 22, textColor, true);
+        nowTitle.setGravity(Gravity.CENTER);
+        nowTitle.setMaxLines(2);
+        nowTitle.setEllipsize(TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams titleParams =
+                new LinearLayout.LayoutParams(-1, -2);
+        titleParams.topMargin = dp(24);
+        box.addView(nowTitle, titleParams);
+
+        nowArtist = label("", 15, secondaryColor, false);
+        nowArtist.setGravity(Gravity.CENTER);
+        nowArtist.setSingleLine(true);
+        nowArtist.setEllipsize(TextUtils.TruncateAt.END);
+        box.addView(nowArtist, new LinearLayout.LayoutParams(-1, -2));
+
+        nowStatus = label("", 13, accentColor, false);
+        nowStatus.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams statusParams =
+                new LinearLayout.LayoutParams(-1, -2);
+        statusParams.topMargin = dp(6);
+        box.addView(nowStatus, statusParams);
+
+        seekBar = new SeekBar(this);
+        seekBar.setMax(1);
+        seekBar.setProgressTintList(ColorStateList.valueOf(accentColor));
+        seekBar.setThumbTintList(ColorStateList.valueOf(accentColor));
+        LinearLayout.LayoutParams seekParams =
+                new LinearLayout.LayoutParams(-1, -2);
+        seekParams.topMargin = dp(20);
+        box.addView(seekBar, seekParams);
+
+        LinearLayout timeRow = new LinearLayout(this);
+        timeRow.setOrientation(LinearLayout.HORIZONTAL);
+
+        currentTimeText = label("00:00", 12, secondaryColor, false);
+        totalTimeText = label("00:00", 12, secondaryColor, false);
+        totalTimeText.setGravity(Gravity.END);
+
+        timeRow.addView(currentTimeText, new LinearLayout.LayoutParams(0, -2, 1));
+        timeRow.addView(totalTimeText, new LinearLayout.LayoutParams(0, -2, 1));
+        box.addView(timeRow, new LinearLayout.LayoutParams(-1, -2));
+
+        seekBar.setOnSeekBarChangeListener(
+                new SeekBar.OnSeekBarChangeListener() {
+                    @Override
+                    public void onProgressChanged(
+                            SeekBar bar, int progress, boolean fromUser) {
+                        if (fromUser) {
+                            currentTimeText.setText(formatTime(progress));
+                        }
+                    }
+
+                    @Override
+                    public void onStartTrackingTouch(SeekBar bar) {
+                        seeking = true;
+                    }
+
+                    @Override
+                    public void onStopTrackingTouch(SeekBar bar) {
+                        seeking = false;
+
+                        if (prepared && PlaybackService.currentSong != null) {
+                            Intent intent = new Intent(
+                                    MainActivity.this, PlaybackService.class);
+                            intent.setAction(PlaybackService.ACTION_SEEK);
+                            intent.putExtra(
+                                    PlaybackService.EXTRA_SEEK_POSITION,
+                                    bar.getProgress());
+                            try {
+                                startService(intent);
+                            } catch (Exception ignored) {
+                            }
+                        }
+                    }
+                });
+
+        LinearLayout controls = new LinearLayout(this);
+        controls.setOrientation(LinearLayout.HORIZONTAL);
+        controls.setGravity(Gravity.CENTER);
+
+        Button previous = makeButton("⏮", panelColor);
+        nowPlayButton = makeButton("▶", accentColor);
+        Button next = makeButton("⏭", panelColor);
+
+        previous.setTextSize(22);
+        nowPlayButton.setTextSize(24);
+        next.setTextSize(22);
+
+        previous.setOnClickListener(v -> playPrevious());
+        nowPlayButton.setOnClickListener(v -> togglePlayback());
+        next.setOnClickListener(v -> playNext());
+
+        LinearLayout.LayoutParams sideParams =
+                new LinearLayout.LayoutParams(0, dp(64), 1);
+        sideParams.setMargins(dp(4), 0, dp(4), 0);
+        LinearLayout.LayoutParams centerParams =
+                new LinearLayout.LayoutParams(0, dp(64), 1.4f);
+        centerParams.setMargins(dp(4), 0, dp(4), 0);
+
+        controls.addView(previous, sideParams);
+        controls.addView(nowPlayButton, centerParams);
+        controls.addView(next, sideParams);
+
+        LinearLayout.LayoutParams controlsParams =
+                new LinearLayout.LayoutParams(-1, -2);
+        controlsParams.topMargin = dp(22);
+        box.addView(controls, controlsParams);
+
+        scroll.addView(box);
+        return scroll;
     }
 
-    private void scanDocument(Uri treeUri, String documentId) {
-        Uri childrenUri =
-                DocumentsContract.buildChildDocumentsUriUsingTree(
-                        treeUri, documentId);
+    private View buildFoldersPage() {
+        ScrollView scroll = new ScrollView(this);
 
-        String[] projection = {
-                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-                DocumentsContract.Document.COLUMN_MIME_TYPE
-        };
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(8), dp(20), dp(20));
 
-        try (Cursor cursor = getContentResolver().query(
-                childrenUri, projection, null, null, null)) {
+        addButton(box, "📁  Add Music Folder", accentColor,
+                v -> chooseFolder(), 0);
+        addButton(box, "＋  Choose Songs", panelColor,
+                v -> chooseAudio(), 10);
+        addButton(box, "🔄  Rescan Library", panelColor,
+                v -> rescanLibrary(true), 10);
 
-            if (cursor == null) return;
-
-            int idColumn = cursor.getColumnIndex(
-                    DocumentsContract.Document.COLUMN_DOCUMENT_ID);
-            int nameColumn = cursor.getColumnIndex(
-                    DocumentsContract.Document.COLUMN_DISPLAY_NAME);
-            int mimeColumn = cursor.getColumnIndex(
-                    DocumentsContract.Document.COLUMN_MIME_TYPE);
-
-            while (cursor.moveToNext()) {
-                String childId = cursor.getString(idColumn);
-                String name = cursor.getString(nameColumn);
-                String mime = cursor.getString(mimeColumn);
-
-                if (DocumentsContract.Document.MIME_TYPE_DIR
-                        .equals(mime)) {
-                    scanDocument(treeUri, childId);
-                } else if (isAudioFile(name, mime)) {
-                    Uri fileUri =
-                            DocumentsContract.buildDocumentUriUsingTree(
-                                    treeUri, childId);
-                    addSong(fileUri, name);
-                }
-            }
-        } catch (Exception ignored) {
-        }
-    }
-
-    private boolean isAudioFile(String name, String mime) {
-        if (mime != null && mime.startsWith("audio/")) {
-            return true;
-        }
-
-        if (name == null) return false;
-
-        String lower = name.toLowerCase(Locale.ROOT);
-
-        return lower.endsWith(".mp3")
-                || lower.endsWith(".m4a")
-                || lower.endsWith(".aac")
-                || lower.endsWith(".wav")
-                || lower.endsWith(".ogg")
-                || lower.endsWith(".opus")
-                || lower.endsWith(".flac")
-                || lower.endsWith(".wma")
-                || lower.endsWith(".3gp");
-    }
-
-    private void saveFolders() {
-        Set<String> saved = new HashSet<>();
-
-        for (Uri uri : folders) {
-            saved.add(uri.toString());
-        }
-
-        getSharedPreferences(PREFS, MODE_PRIVATE)
-                .edit()
-                .putStringSet(FOLDERS_KEY, saved)
-                .apply();
-    }
-
-    private void loadSavedFolders() {
-        Set<String> saved =
-                getSharedPreferences(PREFS, MODE_PRIVATE)
-                        .getStringSet(FOLDERS_KEY, new HashSet<String>());
-
-        folders.clear();
-
-        if (saved == null) return;
-
-        for (String value : saved) {
-            try {
-                folders.add(Uri.parse(value));
-            } catch (Exception ignored) {
-            }
-        }
-    }
-
-    private void scanSavedFolders() {
-        int before = songs.size();
-
-        for (Uri folder : new ArrayList<>(folders)) {
-            scanFolder(folder);
-        }
-
-        if (songs.size() > before) {
-            updateSongDisplay();
-        }
-    }
-
-    private void updateSongDisplay() {
-        if (songIndex >= 0 && songIndex < songNames.size()) {
-            songName.setText(songNames.get(songIndex));
-        } else {
-            songName.setText("No song selected");
-        }
-
-        if (duration == 0) {
-            if (songs.isEmpty()) {
-                status.setText("Choose music from your phone.");
-            } else {
-                status.setText(songs.size() + " song(s) ready");
-            }
-        }
-    }
-
-    private void startSong(int index) {
-        if (index < 0 || index >= songs.size()) return;
-
-        songIndex = index;
-        loadedIndex = index;
-
-        duration = 0;
-        position = 0;
-        playing = false;
-
-        Intent intent = new Intent(this, PlaybackService.class);
-        intent.setAction(PlaybackService.ACTION_PLAY);
-        intent.putExtra(
-                PlaybackService.EXTRA_AUDIO_URI,
-                songs.get(index).toString());
-        intent.putExtra(
-                PlaybackService.EXTRA_SONG_NAME,
-                songNames.get(index));
-
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(intent);
-            } else {
-                startService(intent);
-            }
-        } catch (Exception e) {
-            status.setText("Could not start playback");
-            Toast.makeText(this,
-                    "Playback could not start",
-                    Toast.LENGTH_LONG).show();
-            return;
-        }
-
-        updateSongDisplay();
-        status.setText("Loading song...");
-        currentTime.setText("00:00");
-        totalTime.setText("00:00");
-        seekBar.setProgress(0);
-    }
-
-    private void playSong() {
-        if (songs.isEmpty()) {
-            Toast.makeText(this,
-                    "First choose songs or add a music folder",
-                    Toast.LENGTH_SHORT).show();
-            return;
-        }
-
-        if (songIndex < 0) songIndex = 0;
-
-        if (playing && loadedIndex == songIndex) {
-            return;
-        }
-
-        if (!playing && duration > 0 && loadedIndex == songIndex) {
-            Intent intent = new Intent(this, PlaybackService.class);
-            intent.setAction(PlaybackService.ACTION_PLAY);
-            startService(intent);
-        } else {
-            startSong(songIndex);
-        }
-    }
-
-    private void pauseSong() {
-        Intent intent = new Intent(this, PlaybackService.class);
-        intent.setAction(PlaybackService.ACTION_PAUSE);
-        startService(intent);
-    }
-
-    private void nextSong() {
-        if (songs.isEmpty()) return;
-
-        startSong((songIndex + 1) % songs.size());
-    }
-
-    private void previousSong() {
-        if (songs.isEmpty()) return;
-
-        int index = songIndex - 1;
-        if (index < 0) index = songs.size() - 1;
-
-        startSong(index);
-    }
-
-    private void changeTheme() {
-        theme = (theme + 1) % 5;
-
-        getSharedPreferences(PREFS, MODE_PRIVATE)
-                .edit()
-                .putInt(THEME_KEY, theme)
-                .apply();
-
-        applyTheme();
-        createScreen();
-        updateSongDisplay();
-
-        if (duration > 0) {
-            seekBar.setMax(Math.max(duration, 1));
-            seekBar.setProgress(Math.min(position, duration));
-            currentTime.setText(formatTime(position));
-            totalTime.setText(formatTime(duration));
-            status.setText(playing ? "♫ Now playing" : "Ⅱ Paused");
-        }
-    }
-
-    private String formatTime(int milliseconds) {
-        int totalSeconds = Math.max(0, milliseconds) / 1000;
-        int minutes = totalSeconds / 60;
-        int seconds = totalSeconds % 60;
-
-        return String.format(
-                Locale.getDefault(),
-                "%02d:%02d",
-                minutes,
-                seconds);
-    }
-
-    @Override
-    protected void onDestroy() {
-        if (receiverRegistered) {
-            try {
-                unregisterReceiver(progressReceiver);
-            } catch (Exception ignored) {
-            }
-
-            receiverRegistered = false;
-        }
-
-        super.onDestroy();
-    }
-}
+        TextView note = label(
+                "Add as many folders as you like, one after another. "
+                        + "Subfolders are scanned too and duplicates are skipped. "
+                        + "Android does not allow choosing the very top of Internal "
+                        + "storage or the Download folder, so pick a folder such as "
+                        + "Music (or a folder inside it).",
+                12, secondaryColor, false);
+        LinearLayout.LayoutParams noteParams =
+                new LinearLayout.LayoutParams(-1, -2);
+ 
