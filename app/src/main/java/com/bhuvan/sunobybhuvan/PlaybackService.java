@@ -396,7 +396,7 @@ public class PlaybackService extends Service {
         sendProgress();
     }
 
-    private void resumePlayback() {
+        private void resumePlayback() {
         if (player == null || !prepared) return;
 
         if (!requestAudioFocus()) {
@@ -555,7 +555,7 @@ public class PlaybackService extends Service {
         Intent intent = new Intent(ACTION_PROGRESS);
         intent.setPackage(getPackageName());
         intent.putExtra(EXTRA_POSITION, position);
-            intent.putExtra(EXTRA_DURATION, duration);
+        intent.putExtra(EXTRA_DURATION, duration);
         intent.putExtra(EXTRA_PLAYING, playing);
         intent.putExtra(EXTRA_PREPARED, prepared);
         intent.putExtra(EXTRA_INDEX,
@@ -717,23 +717,27 @@ public class PlaybackService extends Service {
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .setShowWhen(false)
-                .addAction(android.R.drawable.ic_media_previous,
+                .addAction(R.drawable.ic_notif_prev,
                         "Previous",
                         serviceIntent(ACTION_PREVIOUS, 10))
                 .addAction(
                         playing
-                                ? android.R.drawable.ic_media_pause
-                                : android.R.drawable.ic_media_play,
+                                ? R.drawable.ic_notif_pause
+                                : R.drawable.ic_notif_play,
                         playing ? "Pause" : "Play",
                         serviceIntent(playing ? ACTION_PAUSE : ACTION_PLAY, 11))
-                .addAction(android.R.drawable.ic_media_next,
+                .addAction(R.drawable.ic_notif_next,
                         "Next",
                         serviceIntent(ACTION_NEXT, 12))
-                .addAction(android.R.drawable.ic_menu_close_clear_cancel,
+                .addAction(R.drawable.ic_notif_close,
                         "Stop",
                         serviceIntent(ACTION_STOP, 13))
                 .setStyle(new Notification.MediaStyle()
                         .setShowActionsInCompactView(0, 1, 2));
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            builder.setColorized(true);
+        }
 
         return builder.build();
     }
@@ -808,5 +812,5 @@ public class PlaybackService extends Service {
     public IBinder onBind(Intent intent) {
         return null;
     }
-    }
-    
+                                }
+            
