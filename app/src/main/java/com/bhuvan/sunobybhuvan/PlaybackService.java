@@ -555,7 +555,7 @@ public class PlaybackService extends Service {
         Intent intent = new Intent(ACTION_PROGRESS);
         intent.setPackage(getPackageName());
         intent.putExtra(EXTRA_POSITION, position);
-        intent.putExtra(EXTRA_DURATION, duration);
+            intent.putExtra(EXTRA_DURATION, duration);
         intent.putExtra(EXTRA_PLAYING, playing);
         intent.putExtra(EXTRA_PREPARED, prepared);
         intent.putExtra(EXTRA_INDEX,
@@ -626,4 +626,186 @@ public class PlaybackService extends Service {
                                         .setContentType(
                                                 AudioAttributes.CONTENT_TYPE_MUSIC)
                                         .build())
-                       
+                        .setOnAudioFocusChangeListener(focusListener)
+                        .build();
+            }
+            result = audioManager.requestAudioFocus(focusRequest);
+        } else {
+            result = audioManager.requestAudioFocus(
+                    focusListener,
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.AUDIOFOCUS_GAIN);
+        }
+
+        return result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
+    }
+
+    private void abandonAudioFocus() {
+        if (audioManager == null) return;
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (focusRequest != null) {
+                audioManager.abandonAudioFocusRequest(focusRequest);
+            }
+        } else {
+            audioManager.abandonAudioFocus(focusListener);
+        }
+    }
+
+    private void ensureForeground() {
+        try {
+            Notification notification = buildNotification();
+
+            if (Build.VERSION.SDK_INT >= 29) {
+                startForeground(
+                        NOTIFICATION_ID,
+                        notification,
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
+            } else {
+                startForeground(NOTIFICATION_ID, notification);
+            }
+
+            isForeground = true;
+        } catch (RuntimeException e) {
+            isForeground = false;
+        }
+    }
+
+    private PendingIntent serviceIntent(String action, int requestCode) {
+        Intent intent = new Intent(this, PlaybackService.class);
+        intent.setAction(action);
+
+        return PendingIntent.getService(
+                this,
+                requestCode,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT
+                        | PendingIntent.FLAG_IMMUTABLE);
+    }
+
+    private Notification buildNotification() {
+        boolean playing = isPlayerPlaying();
+
+        String title = currentSong != null
+                ? currentSong.title : "Suno by Bhuvan";
+
+        Intent open = new Intent(this, MainActivity.class);
+        open.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP
+                | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+
+        PendingIntent contentIntent = PendingIntent.getActivity(
+                this,
+                0,
+                open,
+                PendingIntent.FLAG_UPDATE_CURRENT
+                        | PendingIntent.FLAG_IMMUTABLE);
+
+        Notification.Builder builder;
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            builder = new Notification.Builder(this, CHANNEL_ID);
+        } else {
+            builder = new Notification.Builder(this);
+        }
+
+        builder.setContentTitle(title)
+                .setSmallIcon(android.R.drawable.ic_media_play)
+                .setCategory(Notification.CATEGORY_TRANSPORT)
+                .setVisibility(Notification.VISIBILITY_PUBLIC)
+                .setContentIntent(contentIntent)
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setShowWhen(false)
+                .addAction(android.R.drawable.ic_media_previous,
+                        "Previous",
+                        serviceIntent(ACTION_PREVIOUS, 10))
+                .addAction(
+                        playing
+                                ? android.R.drawable.ic_media_pause
+                                : android.R.drawable.ic_media_play,
+                        playing ? "Pause" : "Play",
+                        serviceIntent(playing ? ACTION_PAUSE : ACTION_PLAY, 11))
+                .addAction(android.R.drawable.ic_media_next,
+                        "Next",
+                        serviceIntent(ACTION_NEXT, 12))
+                .addAction(android.R.drawable.ic_menu_close_clear_cancel,
+                        "Stop",
+                        serviceIntent(ACTION_STOP, 13))
+                .setStyle(new Notification.MediaStyle()
+                        .setShowActionsInCompactView(0, 1, 2));
+
+        return builder.build();
+    }
+
+    private void updateNotification() {
+        if (!isForeground) return;
+
+        NotificationManager manager =
+                (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+
+        if (manager != null) {
+            manager.notify(NOTIFICATION_ID, buildNotification());
+        }
+    }
+
+    private void createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(
+                    CHANNEL_ID,
+                    "Suno Music Playback",
+                    NotificationManager.IMPORTANCE_LOW);
+
+            channel.setDescription("Music playback controls");
+
+            NotificationManager manager =
+                    getSystemService(NotificationManager.class);
+
+            if (manager != null) {
+                manager.createNotificationChannel(channel);
+            }
+        }
+    }
+
+    private void releasePlayer() {
+        handler.removeCallbacks(progressRunnable);
+        prepared = false;
+
+        if (player != null) {
+            try {
+                player.release();
+            } catch (Exception ignored) {
+            }
+
+            player = null;
+        }
+    }
+
+    @Override
+    public void onDestroy() {
+        handler.removeCallbacksAndMessages(null);
+        sleepEndAt = 0;
+        releasePlayer();
+        abandonAudioFocus();
+
+        if (noisyRegistered) {
+            try {
+                unregisterReceiver(noisyReceiver);
+            } catch (Exception ignored) {
+            }
+            noisyRegistered = false;
+        }
+
+        if (isForeground) {
+            stopForeground(true);
+            isForeground = false;
+        }
+
+        super.onDestroy();
+    }
+
+    @Override
+    public IBinder onBind(Intent intent) {
+        return null;
+    }
+    }
+        
