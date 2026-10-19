@@ -32,12 +32,10 @@ import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.animation.LinearInterpolator;
 import android.widget.BaseAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
-import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.ScrollView;
@@ -141,7 +139,7 @@ public class MainActivity extends Activity {
     private Button sleepButton;
     private TextView loopInfoText;
 
-    private static final int EQ_BARS = 1;
+    private static final int EQ_BARS = 5;
     private final ObjectAnimator[] eqAnimators = new ObjectAnimator[EQ_BARS];
 
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
@@ -219,9 +217,6 @@ public class MainActivity extends Activity {
         loadUris(SONGS_KEY, singleSongs);
 
         buildUi();
-        if (savedInstanceState == null) {
-            showSplash();
-        }
         registerReceivers();
         syncCurrentIndex();
         refreshAllUi();
@@ -456,7 +451,7 @@ public class MainActivity extends Activity {
         return page;
     }
 
-        private View buildNowPlayingPage() {
+    private View buildNowPlayingPage() {
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
 
@@ -465,46 +460,35 @@ public class MainActivity extends Activity {
         box.setPadding(dp(24), dp(10), dp(24), dp(20));
         box.setGravity(Gravity.CENTER_HORIZONTAL);
 
-        FrameLayout disc = new FrameLayout(this);
-        GradientDrawable discBackground = new GradientDrawable();
-        discBackground.setShape(GradientDrawable.OVAL);
-        discBackground.setColor(panelColor);
-        discBackground.setStroke(dp(2), accentColor);
-        disc.setBackground(discBackground);
+        FrameLayout art = new FrameLayout(this);
+        art.setBackground(rounded(accentColor, 28));
 
-        addDiscRing(disc, 22);
-        addDiscRing(disc, 44);
-        addDiscRing(disc, 66);
-
-        View notch = new View(this);
-        notch.setBackground(oval(accentColor));
-        FrameLayout.LayoutParams notchParams =
-                new FrameLayout.LayoutParams(dp(10), dp(10),
-                        Gravity.TOP | Gravity.CENTER_HORIZONTAL);
-        notchParams.topMargin = dp(9);
-        disc.addView(notch, notchParams);
-
-        FrameLayout discLabel = new FrameLayout(this);
-        discLabel.setBackground(oval(accentColor));
-        View discHole = new View(this);
-        discHole.setBackground(oval(backgroundColor));
-        discLabel.addView(discHole,
-                new FrameLayout.LayoutParams(dp(12), dp(12), Gravity.CENTER));
-        disc.addView(discLabel,
-                new FrameLayout.LayoutParams(dp(78), dp(78), Gravity.CENTER));
-
+        LinearLayout eq = new LinearLayout(this);
+        eq.setOrientation(LinearLayout.HORIZONTAL);
+        eq.setGravity(Gravity.BOTTOM);
         cancelEqualizer();
-        ObjectAnimator spin = ObjectAnimator.ofFloat(disc, "rotation", 0f, 360f);
-        spin.setDuration(8000);
-        spin.setInterpolator(new LinearInterpolator());
-        spin.setRepeatCount(ValueAnimator.INFINITE);
-        spin.setRepeatMode(ValueAnimator.RESTART);
-        eqAnimators[0] = spin;
 
-        LinearLayout.LayoutParams discParams =
-                new LinearLayout.LayoutParams(dp(210), dp(210));
-        discParams.topMargin = dp(6);
-        box.addView(disc, discParams);
+        for (int i = 0; i < EQ_BARS; i++) {
+            View eqBar = new View(this);
+            eqBar.setBackground(rounded(Color.WHITE, 4));
+            eqBar.setPivotY(dp(80));
+            eqBar.setScaleY(0.25f);
+
+            LinearLayout.LayoutParams eqParams =
+                    new LinearLayout.LayoutParams(dp(12), dp(80));
+            eqParams.setMargins(dp(5), 0, dp(5), 0);
+            eq.addView(eqBar, eqParams);
+
+            ObjectAnimator animator =
+                    ObjectAnimator.ofFloat(eqBar, "scaleY", 0.25f, 1f);
+            animator.setDuration(450 + i * 130);
+            animator.setRepeatCount(ValueAnimator.INFINITE);
+            animator.setRepeatMode(ValueAnimator.REVERSE);
+            eqAnimators[i] = animator;
+        }
+
+        art.addView(eq, new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER));
+        box.addView(art, new LinearLayout.LayoutParams(-1, dp(190)));
 
         nowTitle = label("No song selected", 22, textColor, true);
         nowTitle.setGravity(Gravity.CENTER);
@@ -535,7 +519,6 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams seekParams =
                 new LinearLayout.LayoutParams(-1, -2);
         seekParams.topMargin = dp(20);
-        seekBar.setPadding(dp(16), dp(10), dp(16), dp(10));
         box.addView(seekBar, seekParams);
 
         LinearLayout timeRow = new LinearLayout(this);
@@ -548,18 +531,6 @@ public class MainActivity extends Activity {
         timeRow.addView(currentTimeText, new LinearLayout.LayoutParams(0, -2, 1));
         timeRow.addView(totalTimeText, new LinearLayout.LayoutParams(0, -2, 1));
         box.addView(timeRow, new LinearLayout.LayoutParams(-1, -2));
-
-        seekBar.setOnTouchListener((v, event) -> {
-            int a = event.getActionMasked();
-            if (a == android.view.MotionEvent.ACTION_DOWN
-                    || a == android.view.MotionEvent.ACTION_MOVE) {
-                v.getParent().requestDisallowInterceptTouchEvent(true);
-            } else if (a == android.view.MotionEvent.ACTION_UP
-                    || a == android.view.MotionEvent.ACTION_CANCEL) {
-                v.getParent().requestDisallowInterceptTouchEvent(false);
-            }
-            return false;
-        });
 
         seekBar.setOnSeekBarChangeListener(
                 new SeekBar.OnSeekBarChangeListener() {
@@ -632,16 +603,18 @@ public class MainActivity extends Activity {
             cycleLoop();
         });
 
-        controls.addView(circleSlot(shuffleButton, 50, panelColor),
-                new LinearLayout.LayoutParams(0, dp(70), 1));
-        controls.addView(circleSlot(previous, 52, panelColor),
-                new LinearLayout.LayoutParams(0, dp(70), 1));
-        controls.addView(circleSlot(nowPlayButton, 68, accentColor),
-                new LinearLayout.LayoutParams(0, dp(70), 1.2f));
-        controls.addView(circleSlot(next, 52, panelColor),
-                new LinearLayout.LayoutParams(0, dp(70), 1));
-        controls.addView(circleSlot(loopButton, 50, panelColor),
-                new LinearLayout.LayoutParams(0, dp(70), 1));
+        LinearLayout.LayoutParams sideParams =
+                new LinearLayout.LayoutParams(0, dp(60), 1);
+        sideParams.setMargins(dp(3), 0, dp(3), 0);
+        LinearLayout.LayoutParams centerParams =
+                new LinearLayout.LayoutParams(0, dp(60), 1.3f);
+        centerParams.setMargins(dp(3), 0, dp(3), 0);
+
+        controls.addView(shuffleButton, sideParams);
+        controls.addView(previous, sideParams);
+        controls.addView(nowPlayButton, centerParams);
+        controls.addView(next, sideParams);
+        controls.addView(loopButton, sideParams);
 
         LinearLayout.LayoutParams controlsParams =
                 new LinearLayout.LayoutParams(-1, -2);
@@ -657,7 +630,6 @@ public class MainActivity extends Activity {
 
         sleepButton = makeButton("😴  Sleep timer: off", panelColor);
         sleepButton.setTextSize(14);
-        sleepButton.setBackground(rounded(panelColor, 28));
         sleepButton.setOnClickListener(v -> {
             pop(v);
             showSleepDialog();
@@ -894,7 +866,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void addRow(String text, Button button) {
+         private void addRow(String text, Button button) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
@@ -910,7 +882,7 @@ public class MainActivity extends Activity {
         foldersContainer.addView(row, params);
     }
 
-                private class SongAdapter extends BaseAdapter {
+    private class SongAdapter extends BaseAdapter {
         @Override
         public int getCount() {
             return PlaybackService.library.size();
@@ -1050,79 +1022,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    // ------------------------------------------------------ style helpers
-
-    private GradientDrawable oval(int color) {
-        GradientDrawable drawable = new GradientDrawable();
-        drawable.setShape(GradientDrawable.OVAL);
-        drawable.setColor(color);
-        return drawable;
-    }
-
-    private void addDiscRing(FrameLayout disc, int insetDp) {
-        View ring = new View(this);
-        GradientDrawable stroke = new GradientDrawable();
-        stroke.setShape(GradientDrawable.OVAL);
-        stroke.setColor(Color.TRANSPARENT);
-        stroke.setStroke(dp(1), Color.argb(45, 255, 255, 255));
-        ring.setBackground(stroke);
-
-        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(-1, -1);
-        params.setMargins(dp(insetDp), dp(insetDp), dp(insetDp), dp(insetDp));
-        disc.addView(ring, params);
-    }
-
-    private FrameLayout circleSlot(Button button, int sizeDp, int color) {
-        button.setBackground(oval(color));
-        button.setPadding(0, 0, 0, 0);
-        button.setMinHeight(0);
-        button.setMinimumHeight(0);
-        button.setMinWidth(0);
-        button.setMinimumWidth(0);
-
-        FrameLayout slot = new FrameLayout(this);
-        slot.addView(button, new FrameLayout.LayoutParams(
-                dp(sizeDp), dp(sizeDp), Gravity.CENTER));
-        return slot;
-    }
-
-    private void showSplash() {
-        final LinearLayout splash = new LinearLayout(this);
-        splash.setOrientation(LinearLayout.VERTICAL);
-        splash.setGravity(Gravity.CENTER);
-        splash.setBackgroundColor(backgroundColor);
-        splash.setClickable(true);
-
-        final ImageView logo = new ImageView(this);
-        logo.setImageResource(R.drawable.ic_splash_logo);
-        logo.setAlpha(0f);
-        logo.setScaleX(0.8f);
-        logo.setScaleY(0.8f);
-        splash.addView(logo, new LinearLayout.LayoutParams(dp(120), dp(120)));
-
-        final TextView name = label("Suno by Bhuvan", 26, textColor, true);
-        name.setGravity(Gravity.CENTER);
-        name.setAlpha(0f);
-        LinearLayout.LayoutParams nameParams =
-                new LinearLayout.LayoutParams(-2, -2);
-        nameParams.topMargin = dp(22);
-        splash.addView(name, nameParams);
-
-        addContentView(splash, new ViewGroup.LayoutParams(-1, -1));
-
-        logo.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(450).start();
-        name.animate().alpha(1f).setStartDelay(200).setDuration(450).start();
-
-        splash.postDelayed(() -> splash.animate()
-                .alpha(0f)
-                .setDuration(350)
-                .withEndAction(() -> {
-                    ViewGroup parent = (ViewGroup) splash.getParent();
-                    if (parent != null) parent.removeView(splash);
-                })
-                .start(), 1400);
-    }
-
     // ------------------------------------------------- shuffle / loop / sleep
 
     private void pop(View view) {
@@ -1161,12 +1060,12 @@ public class MainActivity extends Activity {
         int mode = PlaybackService.loopMode;
 
         shuffleButton.setBackground(
-                rounded(shuffle ? accentColor : panelColor, 40));
+                rounded(shuffle ? accentColor : panelColor, 16));
 
         loopButton.setText(mode == PlaybackService.LOOP_ONE ? "🔂" : "🔁");
         loopButton.setBackground(rounded(
                 mode != PlaybackService.LOOP_OFF ? accentColor : panelColor,
-                40));
+                16));
 
         String info = "";
         if (mode == PlaybackService.LOOP_ALL) {
@@ -1197,10 +1096,10 @@ public class MainActivity extends Activity {
                         secs / 60, secs % 60);
             }
             sleepButton.setText("😴  Sleep in " + time);
-            sleepButton.setBackground(rounded(accentColor, 28));
+            sleepButton.setBackground(rounded(accentColor, 16));
         } else {
             sleepButton.setText("😴  Sleep timer: off");
-            sleepButton.setBackground(rounded(panelColor, 28));
+            sleepButton.setBackground(rounded(panelColor, 16));
         }
     }
 
@@ -1403,7 +1302,7 @@ public class MainActivity extends Activity {
         }
     }
 
-        private void removeFolder(Uri folder) {
+                        private void removeFolder(Uri folder) {
         folders.remove(folder);
 
         try {
@@ -1824,5 +1723,5 @@ public class MainActivity extends Activity {
                     Toast.LENGTH_LONG).show();
         }
     }
-    }
-                                 
+        }
+                                  
