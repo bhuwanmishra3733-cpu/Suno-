@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ic_launcher_background">#E11D2E</color>
+    <color name="suno_window_bg">#0C0D13</color>
+
+    <style name="SunoTheme" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/suno_window_bg</item>
+    </style>
+</resources>
