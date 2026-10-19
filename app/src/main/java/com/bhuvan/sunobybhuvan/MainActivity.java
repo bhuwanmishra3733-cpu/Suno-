@@ -563,4 +563,883 @@ public class MainActivity extends Activity {
                 12, secondaryColor, false);
         LinearLayout.LayoutParams noteParams =
                 new LinearLayout.LayoutParams(-1, -2);
- 
+        noteParams.topMargin = dp(12);
+        box.addView(note, noteParams);
+
+        TextView foldersLabel = label("SELECTED FOLDERS", 13, secondaryColor, true);
+        LinearLayout.LayoutParams foldersLabelParams =
+                new LinearLayout.LayoutParams(-1, -2);
+        foldersLabelParams.topMargin = dp(22);
+        box.addView(foldersLabel, foldersLabelParams);
+
+        foldersContainer = new LinearLayout(this);
+        foldersContainer.setOrientation(LinearLayout.VERTICAL);
+        box.addView(foldersContainer, new LinearLayout.LayoutParams(-1, -2));
+
+        TextView themeLabel = label("THEME", 13, secondaryColor, true);
+        LinearLayout.LayoutParams themeLabelParams =
+                new LinearLayout.LayoutParams(-1, -2);
+        themeLabelParams.topMargin = dp(26);
+        box.addView(themeLabel, themeLabelParams);
+
+        for (int i = 0; i < THEME_NAMES.length; i++) {
+            final int index = i;
+            String text = THEME_NAMES[i] + (i == theme ? "   ✓" : "");
+            addButton(box, text, THEME_ACCENT[i], v -> selectTheme(index), 8);
+        }
+
+        scroll.addView(box);
+        return scroll;
+    }
+
+    private LinearLayout buildMiniBar() {
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        bar.setBackground(rounded(panelColor, 16));
+        bar.setPadding(dp(14), dp(4), dp(8), dp(4));
+
+        miniTitle = label("Nothing playing", 14, textColor, true);
+        miniTitle.setSingleLine(true);
+        miniTitle.setEllipsize(TextUtils.TruncateAt.END);
+        miniTitle.setGravity(Gravity.CENTER_VERTICAL);
+        miniTitle.setOnClickListener(v -> showPage(1));
+        bar.addView(miniTitle, new LinearLayout.LayoutParams(0, dp(48), 1));
+
+        miniPlayButton = makeButton("▶", accentColor);
+        miniPlayButton.setOnClickListener(v -> togglePlayback());
+        bar.addView(miniPlayButton, new LinearLayout.LayoutParams(dp(52), dp(44)));
+
+        Button next = makeButton("⏭", backgroundColor);
+        next.setOnClickListener(v -> playNext());
+        LinearLayout.LayoutParams nextParams =
+                new LinearLayout.LayoutParams(dp(52), dp(44));
+        nextParams.leftMargin = dp(6);
+        bar.addView(next, nextParams);
+
+        return bar;
+    }
+
+    private LinearLayout buildTabBar() {
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+
+        String[] titles = {"🎵 Library", "▶ Now Playing", "📁 Folders"};
+
+        for (int i = 0; i < titles.length; i++) {
+            final int page = i;
+            Button button = makeButton(titles[i], panelColor);
+            button.setTextSize(13);
+            button.setOnClickListener(v -> showPage(page));
+            tabButtons[i] = button;
+
+            LinearLayout.LayoutParams params =
+                    new LinearLayout.LayoutParams(0, dp(48), 1);
+            params.setMargins(dp(3), 0, dp(3), 0);
+            bar.addView(button, params);
+        }
+
+        return bar;
+    }
+
+    private void showPage(int page) {
+        currentPage = page;
+
+        for (int i = 0; i < pages.length; i++) {
+            if (pages[i] != null) {
+                pages[i].setVisibility(i == page ? View.VISIBLE : View.GONE);
+            }
+            if (tabButtons[i] != null) {
+                tabButtons[i].setBackground(
+                        rounded(i == page ? accentColor : panelColor, 14));
+            }
+        }
+
+        updateMiniBarVisibility();
+    }
+
+    private void updateMiniBarVisibility() {
+        if (miniBar == null) return;
+
+        boolean show = songAt(currentIndex) != null && currentPage != 1;
+        miniBar.setVisibility(show ? View.VISIBLE : View.GONE);
+    }
+
+    private void refreshAllUi() {
+        updateLibraryHeader();
+        refreshFoldersUi();
+        updatePlayerUi();
+
+        if (adapter != null) {
+            adapter.notifyDataSetChanged();
+        }
+    }
+
+    private void updateLibraryHeader() {
+        if (libraryHeader == null) return;
+
+        int count = PlaybackService.library.size();
+
+        if (scanning) {
+            libraryHeader.setText("SCANNING YOUR MUSIC...  •  " + count + " found");
+        } else {
+            libraryHeader.setText("YOUR LIBRARY  •  " + count
+                    + (count == 1 ? " song" : " songs"));
+        }
+
+        emptyText.setVisibility(count == 0 && !scanning
+                ? View.VISIBLE : View.GONE);
+    }
+
+    private void updatePlayerUi() {
+        if (nowTitle == null) return;
+
+        Song song = songAt(currentIndex);
+
+        nowTitle.setText(song == null ? "No song selected" : song.title);
+        nowArtist.setText(song == null ? "" : displayArtist(song));
+        miniTitle.setText(song == null ? "Nothing playing" : song.title);
+
+        String state;
+        if (song == null) {
+            state = PlaybackService.library.isEmpty()
+                    ? "Add a music folder to begin."
+                    : "Tap a song in your library to play it.";
+        } else if (!prepared) {
+            state = "Loading...";
+        } else {
+            state = playing ? "♫ Now playing" : "Ⅱ Paused";
+        }
+        nowStatus.setText(state);
+
+        String toggle = playing ? "Ⅱ" : "▶";
+        nowPlayButton.setText(toggle);
+        miniPlayButton.setText(toggle);
+
+        if (prepared && song != null) {
+            if (!seeking) {
+                seekBar.setMax(Math.max(duration, 1));
+                seekBar.setProgress(Math.min(position, Math.max(duration, 1)));
+                currentTimeText.setText(formatTime(position));
+            }
+            totalTimeText.setText(formatTime(duration));
+        } else if (!seeking) {
+            seekBar.setMax(1);
+            seekBar.setProgress(0);
+            currentTimeText.setText("00:00");
+            totalTimeText.setText("00:00");
+        }
+
+        updateMiniBarVisibility();
+    }
+
+    private void refreshFoldersUi() {
+        if (foldersContainer == null) return;
+
+        foldersContainer.removeAllViews();
+
+        if (folders.isEmpty() && singleSongs.isEmpty()) {
+            foldersContainer.addView(
+                    label("No folders added yet.", 14, secondaryColor, false),
+                    new LinearLayout.LayoutParams(-1, -2));
+            return;
+        }
+
+        for (final Uri folder : folders) {
+            Button remove = makeButton("Remove", backgroundColor);
+            remove.setTextSize(12);
+            remove.setOnClickListener(v -> removeFolder(folder));
+            addRow(folderDisplayName(folder), remove);
+        }
+
+        if (!singleSongs.isEmpty()) {
+            Button clear = makeButton("Clear", backgroundColor);
+            clear.setTextSize(12);
+            clear.setOnClickListener(v -> clearSingleSongs());
+            addRow(singleSongs.size() + " song(s) chosen individually", clear);
+        }
+    }
+
+    private void addRow(String text, Button button) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setBackground(rounded(panelColor, 14));
+        row.setPadding(dp(14), dp(6), dp(8), dp(6));
+
+        row.addView(label(text, 14, textColor, false),
+                new LinearLayout.LayoutParams(0, -2, 1));
+        row.addView(button, new LinearLayout.LayoutParams(dp(84), dp(42)));
+
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+        params.topMargin = dp(8);
+        foldersContainer.addView(row, params);
+    }
+
+    private class SongAdapter extends BaseAdapter {
+        @Override
+        public int getCount() {
+            return PlaybackService.library.size();
+        }
+
+        @Override
+        public Object getItem(int index) {
+            return PlaybackService.library.get(index);
+        }
+
+        @Override
+        public long getItemId(int index) {
+            return index;
+        }
+
+        @Override
+        public View getView(int index, View convertView, ViewGroup parent) {
+            LinearLayout row;
+            TextView title;
+            TextView sub;
+
+            if (convertView == null) {
+                row = new LinearLayout(MainActivity.this);
+                row.setOrientation(LinearLayout.VERTICAL);
+                row.setPadding(dp(14), dp(10), dp(14), dp(10));
+
+                title = new TextView(MainActivity.this);
+                title.setTextSize(15);
+                title.setTypeface(null, Typeface.BOLD);
+                title.setSingleLine(true);
+                title.setEllipsize(TextUtils.TruncateAt.END);
+
+                sub = new TextView(MainActivity.this);
+                sub.setTextSize(12);
+                sub.setSingleLine(true);
+                sub.setEllipsize(TextUtils.TruncateAt.END);
+
+                row.addView(title);
+                row.addView(sub);
+                row.setTag(new TextView[]{title, sub});
+            } else {
+                row = (LinearLayout) convertView;
+                TextView[] views = (TextView[]) row.getTag();
+                title = views[0];
+                sub = views[1];
+            }
+
+            Song song = PlaybackService.library.get(index);
+            boolean current = index == currentIndex;
+
+            title.setText(song.title);
+            title.setTextColor(current ? accentColor : textColor);
+
+            String details = displayArtist(song);
+            if (song.durationMs > 0) {
+                details += "  •  " + formatTime(song.durationMs);
+            }
+            sub.setText(details);
+            sub.setTextColor(secondaryColor);
+
+            row.setBackground(rounded(
+                    current ? panelColor : Color.TRANSPARENT, 12));
+
+            return row;
+        }
+    }
+
+    // --------------------------------------------------------------- playback
+
+    private void sendPlay(int index) {
+        if (index < 0 || index >= PlaybackService.library.size()) {
+            Toast.makeText(this,
+                    "Add a music folder or choose songs first.",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        Intent intent = new Intent(this, PlaybackService.class);
+        intent.setAction(PlaybackService.ACTION_PLAY);
+        intent.putExtra(PlaybackService.EXTRA_INDEX, index);
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent);
+            } else {
+                startService(intent);
+            }
+        } catch (Exception e) {
+            Toast.makeText(this,
+                    "Playback could not start. Please try again.",
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void sendCommand(String action) {
+        Intent intent = new Intent(this, PlaybackService.class);
+        intent.setAction(action);
+
+        try {
+            startService(intent);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void togglePlayback() {
+        if (PlaybackService.library.isEmpty()) {
+            Toast.makeText(this,
+                    "Add a music folder or choose songs first.",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        if (playing) {
+            sendCommand(PlaybackService.ACTION_PAUSE);
+        } else {
+            sendPlay(currentIndex >= 0 ? currentIndex : 0);
+        }
+    }
+
+    private void playNext() {
+        if (PlaybackService.library.isEmpty()) return;
+
+        if (PlaybackService.currentSong != null) {
+            sendCommand(PlaybackService.ACTION_NEXT);
+        } else {
+            sendPlay(0);
+        }
+    }
+
+    private void playPrevious() {
+        if (PlaybackService.library.isEmpty()) return;
+
+        if (PlaybackService.currentSong != null) {
+            sendCommand(PlaybackService.ACTION_PREVIOUS);
+        } else {
+            sendPlay(0);
+        }
+    }
+
+    // -------------------------------------------------------------- picking
+
+    private void chooseAudio() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("audio/*");
+        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+
+        try {
+            startActivityForResult(intent, PICK_AUDIO);
+        } catch (ActivityNotFoundException e) {
+            Toast.makeText(this,
+                    "No file picker was found on this phone.",
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void chooseFolder() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+
+        try {
+            startActivityForResult(intent, PICK_FOLDER);
+        } catch (ActivityNotFoundException e) {
+            Toast.makeText(this,
+                    "No folder picker was found on this phone.",
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    @Override
+    protected void onActivityResult(
+            int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+
+        if (resultCode != RESULT_OK || data == null) return;
+
+        if (requestCode == PICK_AUDIO) {
+            ArrayList<Uri> picked = new ArrayList<>();
+
+            ClipData clip = data.getClipData();
+            if (clip != null) {
+                for (int i = 0; i < clip.getItemCount(); i++) {
+                    picked.add(clip.getItemAt(i).getUri());
+                }
+            } else if (data.getData() != null) {
+                picked.add(data.getData());
+            }
+
+            boolean added = false;
+
+            for (Uri uri : picked) {
+                if (uri == null || singleSongs.contains(uri)) continue;
+
+                try {
+                    getContentResolver().takePersistableUriPermission(
+                            uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                } catch (Exception ignored) {
+                }
+
+                singleSongs.add(uri);
+                added = true;
+            }
+
+            if (added) {
+                saveUris(SONGS_KEY, singleSongs);
+                refreshFoldersUi();
+                rescanLibrary(true);
+            }
+
+        } else if (requestCode == PICK_FOLDER) {
+            Uri folder = data.getData();
+
+            if (folder == null) {
+                Toast.makeText(this, "No folder was selected.",
+                        Toast.LENGTH_SHORT).show();
+                return;
+            }
+
+            if (folders.contains(folder)) {
+                Toast.makeText(this, "This folder is already added.",
+                        Toast.LENGTH_SHORT).show();
+                return;
+            }
+
+            try {
+                getContentResolver().takePersistableUriPermission(
+                        folder, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } catch (Exception e) {
+                Toast.makeText(this,
+                        "Android did not keep access to this folder, so you may "
+                                + "need to add it again after restarting the app.",
+                        Toast.LENGTH_LONG).show();
+            }
+
+            folders.add(folder);
+            saveUris(FOLDERS_KEY, folders);
+            refreshFoldersUi();
+            rescanLibrary(true);
+        }
+    }
+
+    private void removeFolder(Uri folder) {
+        folders.remove(folder);
+
+        try {
+            getContentResolver().releasePersistableUriPermission(
+                    folder, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } catch (Exception ignored) {
+        }
+
+        saveUris(FOLDERS_KEY, folders);
+        refreshFoldersUi();
+        rescanLibrary(false);
+    }
+
+    private void clearSingleSongs() {
+        singleSongs.clear();
+        saveUris(SONGS_KEY, singleSongs);
+        refreshFoldersUi();
+        rescanLibrary(false);
+    }
+
+    private String folderDisplayName(Uri uri) {
+        try {
+            String id = DocumentsContract.getTreeDocumentId(uri);
+            int colon = id.indexOf(':');
+            String volume = colon >= 0 ? id.substring(0, colon) : id;
+            String path = colon >= 0 ? id.substring(colon + 1) : "";
+            String volumeName =
+                    "primary".equals(volume) ? "Internal storage" : "SD card";
+
+            return path.isEmpty() ? volumeName : volumeName + " / " + path;
+        } catch (Exception e) {
+            return String.valueOf(uri.getLastPathSegment());
+        }
+    }
+
+    // ------------------------------------------------------------ persistence
+
+    private void saveUris(String key, ArrayList<Uri> uris) {
+        Set<String> values = new HashSet<>();
+
+        for (Uri uri : uris) {
+            values.add(uri.toString());
+        }
+
+        getSharedPreferences(PREFS, MODE_PRIVATE)
+                .edit()
+                .putStringSet(key, values)
+                .apply();
+    }
+
+    private void loadUris(String key, ArrayList<Uri> target) {
+        target.clear();
+
+        Set<String> saved = getSharedPreferences(PREFS, MODE_PRIVATE)
+                .getStringSet(key, null);
+
+        if (saved == null) return;
+
+        ArrayList<String> sorted = new ArrayList<>(saved);
+        Collections.sort(sorted);
+
+        for (String value : sorted) {
+            try {
+                target.add(Uri.parse(value));
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    // --------------------------------------------------------------- scanning
+
+    private void rescanLibrary(final boolean showResult) {
+        if (scanning) {
+            rescanPending = true;
+            return;
+        }
+
+        scanning = true;
+        scanGeneration++;
+        final int generation = scanGeneration;
+        updateLibraryHeader();
+
+        final ArrayList<Uri> folderList = new ArrayList<>(folders);
+        final ArrayList<Uri> songList = new ArrayList<>(singleSongs);
+        final HashMap<String, Song> previous = new HashMap<>();
+
+        for (Song song : PlaybackService.library) {
+            previous.put(song.key, song);
+        }
+
+        new Thread(() -> {
+            ArrayList<Song> found = new ArrayList<>();
+            HashSet<String> seen = new HashSet<>();
+            int unreadable = 0;
+
+            for (Uri folder : folderList) {
+                try {
+                    String rootId = DocumentsContract.getTreeDocumentId(folder);
+                    scanDocument(folder, rootId, 0, found, seen, previous);
+                } catch (Exception e) {
+                    unreadable++;
+                }
+            }
+
+            for (Uri uri : songList) {
+                try {
+                    addSingleSong(uri, found, seen, previous);
+                } catch (Exception ignored) {
+                }
+            }
+
+            Collections.sort(found, (a, b) -> a.title.compareToIgnoreCase(b.title));
+
+            final ArrayList<Song> result = found;
+            final int problems = unreadable;
+
+            runOnUiThread(() ->
+                    finishScan(result, problems, generation, showResult));
+        }).start();
+    }
+
+    private void finishScan(ArrayList<Song> found, int unreadable,
+                            int generation, boolean showResult) {
+        scanning = false;
+
+        if (isFinishing() || isDestroyed()) return;
+
+        PlaybackService.library.clear();
+        PlaybackService.library.addAll(found);
+
+        syncCurrentIndex();
+        adapter.notifyDataSetChanged();
+        updateLibraryHeader();
+        updatePlayerUi();
+
+        if (unreadable > 0) {
+            Toast.makeText(this,
+                    "Could not read " + unreadable + " folder(s). Remove them "
+                            + "and add them again in the Folders tab.",
+                    Toast.LENGTH_LONG).show();
+        } else if (showResult) {
+            Toast.makeText(this,
+                    found.size() + " song(s) in your library",
+                    Toast.LENGTH_SHORT).show();
+        }
+
+        if (rescanPending) {
+            rescanPending = false;
+            rescanLibrary(showResult);
+            return;
+        }
+
+        loadMetadata(found, generation);
+    }
+
+    private void scanDocument(Uri treeUri, String documentId, int depth,
+                              ArrayList<Song> found, HashSet<String> seen,
+                              HashMap<String, Song> previous) {
+        if (depth > 40) return;
+
+        Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
+                treeUri, documentId);
+
+        String[] projection = {
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                DocumentsContract.Document.COLUMN_MIME_TYPE,
+                DocumentsContract.Document.COLUMN_SIZE
+        };
+
+        ArrayList<String> subFolders = new ArrayList<>();
+        Cursor cursor = null;
+
+        try {
+            cursor = getContentResolver().query(
+                    childrenUri, projection, null, null, null);
+
+            if (cursor == null) {
+                if (depth == 0) {
+                    throw new IllegalStateException("No access to folder");
+                }
+                return;
+            }
+
+            while (cursor.moveToNext()) {
+                String childId = cursor.getString(0);
+                String name = cursor.getString(1);
+                String mime = cursor.getString(2);
+                long size = cursor.isNull(3) ? 0 : cursor.getLong(3);
+
+                if (childId == null) continue;
+
+                if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime)) {
+                    subFolders.add(childId);
+                } else if (isAudioFile(name, mime)) {
+                    Uri fileUri = DocumentsContract.buildDocumentUriUsingTree(
+                            treeUri, childId);
+                    addFoundSong(fileUri, childId, name, size,
+                            found, seen, previous);
+                }
+            }
+        } catch (RuntimeException e) {
+            if (depth == 0) throw e;
+        } finally {
+            if (cursor != null) {
+                cursor.close();
+            }
+        }
+
+        for (String subFolder : subFolders) {
+            scanDocument(treeUri, subFolder, depth + 1, found, seen, previous);
+        }
+    }
+
+    private void addSingleSong(Uri uri, ArrayList<Song> found,
+                               HashSet<String> seen,
+                               HashMap<String, Song> previous) {
+        String documentId;
+
+        try {
+            documentId = DocumentsContract.getDocumentId(uri);
+        } catch (Exception e) {
+            documentId = uri.toString();
+        }
+
+        String name = null;
+        long size = 0;
+        Cursor cursor = null;
+
+        try {
+            cursor = getContentResolver().query(
+                    uri,
+                    new String[]{OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE},
+                    null, null, null);
+
+            if (cursor == null || !cursor.moveToFirst()) {
+                return;
+            }
+
+            name = cursor.getString(0);
+            size = cursor.isNull(1) ? 0 : cursor.getLong(1);
+        } finally {
+            if (cursor != null) {
+                cursor.close();
+            }
+        }
+
+        addFoundSong(uri, documentId, name, size, found, seen, previous);
+    }
+
+    private void addFoundSong(Uri uri, String documentId, String name, long size,
+                              ArrayList<Song> found, HashSet<String> seen,
+                              HashMap<String, Song> previous) {
+        String authority = uri.getAuthority() == null ? "" : uri.getAuthority();
+        String key = authority + "|" + documentId;
+        String altKey = (name != null && size > 0)
+                ? "n|" + name.toLowerCase(Locale.ROOT) + "|" + size
+                : null;
+
+        if (seen.contains(key)) return;
+        if (altKey != null && seen.contains(altKey)) return;
+
+        seen.add(key);
+        if (altKey != null) seen.add(altKey);
+
+        Song song = previous.get(key);
+        if (song == null) {
+            song = new Song(uri, key, titleFromFileName(name));
+        }
+
+        found.add(song);
+    }
+
+    private String titleFromFileName(String name) {
+        if (name == null || name.trim().isEmpty()) return "Unknown song";
+
+        int dot = name.lastIndexOf('.');
+        if (dot > 0) {
+            return name.substring(0, dot);
+        }
+
+        return name;
+    }
+
+    private boolean isAudioFile(String name, String mime) {
+        if (mime != null && mime.startsWith("audio/")) {
+            return true;
+        }
+
+        if (name == null) return false;
+
+        String lower = name.toLowerCase(Locale.ROOT);
+
+        return lower.endsWith(".mp3")
+                || lower.endsWith(".m4a")
+                || lower.endsWith(".aac")
+                || lower.endsWith(".wav")
+                || lower.endsWith(".ogg")
+                || lower.endsWith(".opus")
+                || lower.endsWith(".flac")
+                || lower.endsWith(".wma")
+                || lower.endsWith(".amr")
+                || lower.endsWith(".3gp");
+    }
+
+    // --------------------------------------------------------------- metadata
+
+    private void loadMetadata(final ArrayList<Song> songs, final int generation) {
+        new Thread(() -> {
+            ArrayList<MetaResult> batch = new ArrayList<>();
+
+            for (Song song : songs) {
+                if (generation != scanGeneration) return;
+                if (song.metadataLoaded) continue;
+
+                batch.add(readMetadata(song));
+
+                if (batch.size() >= 25) {
+                    postMetadata(batch, generation);
+                    batch = new ArrayList<>();
+                }
+            }
+
+            if (!batch.isEmpty()) {
+                postMetadata(batch, generation);
+            }
+        }).start();
+    }
+
+    private MetaResult readMetadata(Song song) {
+        String title = null;
+        String artist = null;
+        long durationMs = 0;
+
+        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+
+        try {
+            retriever.setDataSource(this, song.uri);
+            title = retriever.extractMetadata(
+                    MediaMetadataRetriever.METADATA_KEY_TITLE);
+            artist = retriever.extractMetadata(
+                    MediaMetadataRetriever.METADATA_KEY_ARTIST);
+
+            String durationText = retriever.extractMetadata(
+                    MediaMetadataRetriever.METADATA_KEY_DURATION);
+            if (durationText != null) {
+                durationMs = Long.parseLong(durationText);
+            }
+        } catch (Exception ignored) {
+        } finally {
+            try {
+                retriever.release();
+            } catch (Exception ignored) {
+            }
+        }
+
+        return new MetaResult(song, title, artist, durationMs);
+    }
+
+    private void postMetadata(final ArrayList<MetaResult> batch,
+                              final int generation) {
+        runOnUiThread(() -> {
+            if (generation != scanGeneration || isFinishing() || isDestroyed()) {
+                return;
+            }
+
+            for (MetaResult result : batch) {
+                result.song.metadataLoaded = true;
+
+                if (result.title != null && !result.title.trim().isEmpty()) {
+                    result.song.title = result.title.trim();
+                }
+                if (result.artist != null && !result.artist.trim().isEmpty()) {
+                    result.song.artist = result.artist.trim();
+                }
+                if (result.durationMs > 0) {
+                    result.song.durationMs = result.durationMs;
+                }
+            }
+
+            adapter.notifyDataSetChanged();
+            updatePlayerUi();
+        });
+    }
+
+    // ------------------------------------------------------------ permissions
+
+    private void askNotificationPermission() {
+        if (Build.VERSION.SDK_INT < 33) return;
+
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                == PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+
+        if (prefs.getBoolean(ASKED_NOTIFICATIONS_KEY, false)) return;
+
+        prefs.edit().putBoolean(ASKED_NOTIFICATIONS_KEY, true).apply();
+        requestPermissions(
+                new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                REQUEST_NOTIFICATIONS);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(
+            int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+
+        if (requestCode == REQUEST_NOTIFICATIONS
+                && (grantResults.length == 0
+                || grantResults[0] != PackageManager.PERMISSION_GRANTED)) {
+            Toast.makeText(this,
+                    "Notifications are off, so the playback controls will not "
+                            + "show in the notification bar. Music still plays "
+                            + "in the background.",
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+}
